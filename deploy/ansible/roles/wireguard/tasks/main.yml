@@ -1,0 +1,54 @@
+- name: Install WireGuard
+  ansible.builtin.apt:
+    name: [wireguard, wireguard-tools]
+    state: present
+    update_cache: true
+  
+- name: Ensure /etc/wireguard exists
+  ansible.builtin.file:
+    path: /etc/wireguard
+    state: directory
+    mode: "0700"
+
+- name: Gen priv key if missing
+  ansible.buildtin.shell: wg genkey > /etc/wireguard/privatekey
+  args:
+    creates: /etc/wireguard/privatekey
+  no_log: true
+
+- name: Lock down private key
+  ansible.builtin.file:
+    path: /etc/wireguard/privatekey
+    mode: "0600"
+
+- name: Read priv key
+  ansible.builtin.slurp:
+    src: /etc/wireguard/privatekey
+  register: wg_privkey
+  no_log: true
+
+- name: Derive this hosts pub key
+  ansible.builtin.shell: "echo ’{{ wg_privkey.content | b64decode | trim }}' | wg pubkey'"
+  register: wg_pubkey
+  changed_when: false
+
+- name: Show pub key
+  ansible.builtin.debug:
+    msg: >-
+      PublicKey={{ wg_pubkey.stdout }} AllowedIPs={{ aime_wg_adress }}/32
+
+- name: Render wg0.conf
+  ansible.builtin.template:
+    src: wg0.conf.j2
+    dest: /etc/wireguard/wg0.conf
+    mode: "0600"
+  vars: 
+    server_private_key: "{{ wg_privkey.content | b64decode | trim}}"
+  no_log: true
+  notify: Restart wireguard
+
+- name: Enable and start the tunnel
+  ansible.builtin.systemd:
+    name: wg-quick@wg0
+    enabled: true
+    state: started

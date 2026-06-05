@@ -4,7 +4,6 @@ dotenv: ['.env']
 
 vars:
   COMPOSE: docker compose --env-file .env -f /deploy/compose/docker-compose.yml
-  ANSIBLE: ansible-playbook -i deploy/ansible/inventory/hosts.yml deploy/ansible/playbook.yml
 
 tasks:
   default:
@@ -18,6 +17,7 @@ tasks:
       - task: env
       - task: deps:backend
       - task: deps:frontend
+      - task: deps:ansible
 
   doctor:
     desc: "check that every tool is installed for dev"
@@ -67,7 +67,7 @@ tasks:
         echo "Tauri linux system libaries (warn)"
         if command -v pkg-config >/dev/null 2>&1; then
           for lib in gtk+-3.0 webkit2gtk-4.1 librsvg-2.0; do
-            if pkg-config --exits "$lib" 2>/dev/null; then
+            if pkg-config --exists "$lib" 2>/dev/null; then
               printf ' \033[32m\u2713\033[0m %-16s %s\n' "$lib" "$(pkg-config --modversion "$lib")"
             else
               printf ' \033[33m!\033[0m %-16s not found\n' "$lib"
@@ -80,7 +80,7 @@ tasks:
         fi
 
         echo
-        if [ "$warn" -gt 2]; then
+        if [ "$warn" -gt 2 ]; then
           echo "Tauri deps (deb): sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev"
           exit 1
         fi
@@ -98,6 +98,10 @@ tasks:
   deps:frontend:
     dir: frontend
     cmds: [pnpm install]
+
+  deps:ansible:
+    dir: deploy/ansible
+    cmds: [ansible-galaxy collection install -r requirements.yml]
 
   # dev loop
   dev:backend:
@@ -173,8 +177,8 @@ tasks:
   # deploy
   deploy:dev:
     desc: "deploy to devserver via ansible"
-    cmds: ['{{.ANSIBLE}} --limit dev --ask-vault-pass {{.CLI_ARGS}}']
+    cmds: ['{{.ANSIBLE}} -i inventory/hosts.yml playbook.yml --limit dev --ask-vault-pass {{.CLI_ARGS}}']
 
   deploy:prod:
     desc: "deploy to prodserver via ansible"
-    cmds: ['{{.ANSIBLE}} --limit prod --ask-vault-pass {{.CLI_ARGS}}']
+    cmds: ['{{.ANSIBLE}} -i inventory/hosts.yml playbook.yml --limit prod --ask-vault-pass {{.CLI_ARGS}}']

@@ -1,0 +1,4 @@
+- name: Restart wireguard
+  ansible.builtin.systemd:
+    name: wg-quick@qg0
+    state: restarted

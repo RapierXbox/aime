@@ -1,0 +1,12 @@
+aime_app_dir: /opt/aime
+aime_repo_url: "git@github.com:RapierXbox/aime.git"
+
+aime_postgres_db: aime
+aime_postgres_password: "{{ vault_postgres_password }}"
+
+aime_grafana_admin_user: aime
+aime_grafana_admin_password: "{{ vault_grafana_admin_password }}"
+
+ime_wg_hub_public_key: "VOLlfoah9H/y/1ICbGGJd4oVdnJKs8d1is4ZnP5YUW8="
+aime_wg_hub_endpoint: "codeclub.check24.fun:51820"
+aime_wg_hub_allowed_ips: "172.16.67.0/24"

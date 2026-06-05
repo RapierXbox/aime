@@ -1,0 +1,7 @@
+- name: Deploy AIME
+  hosts: all
+  become: true
+  roles:
+    - docker # install engine + compose
+    - wireguard # bring up wg0 before compose binds to its ip
+    - deploy # git pull, render .env + Caddyfile, compose up

@@ -1,0 +1,2 @@
+vault_postgres_password: "replaceme?"
+vault_grafana_admin_password: "also_replace_me?"

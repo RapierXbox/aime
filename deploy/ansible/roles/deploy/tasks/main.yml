@@ -1,0 +1,37 @@
+- name: Ensure app directory exists
+  ansible.builtin.file:
+    path: "{{ aime_app_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Checkout / update repo
+  ansible.builtin.git:
+    repo: "{{ aime_repo_url }}"
+    dest: "{{ aime_app_dir }}"
+    version: "{{ aime_git_version }}"
+    accept_hostkey: true
+    force: true
+
+- name: Render the env file
+  ansible.builtin.template:
+    src: env.j2
+    dest: "{{ aime_app_dir }}/.env"
+    mode: "0600"
+
+- name: Render the caddyfile
+  ansible.builtin.template:
+    src: "{{ playbook_dir }}/../caddy/Caddy.j2"
+    dest: "{{ aime_app_dir }}/deploy/caddy/Caddyfile"
+
+
+- name: "Start the stack"
+  community.docker.docker_compose_v2:
+    project_src: "{{ aime_app_dir }}/deploy/compose"
+    files:
+      - docker-compose.yml
+      - docker-compose.edge.yml
+    env_files:
+      - "{{ aime_app_dir }}/.env"
+    profiles: [edge, monitoring]
+    build: always
+    state: present

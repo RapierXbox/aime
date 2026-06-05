@@ -1,0 +1,74 @@
+name: "aime"
+version: "3"
+
+services:
+  db:
+    image: "postgres:latest"
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-aime}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aime}
+      POSTGRES_DB: ${POSTGRES_DB:-aime}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg is_ready -U ${POSTGRES_USER:-aime} -d ${POSTGRES_DB:-aime}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432" # local debugging only
+    
+  backend:
+    build:
+      context: ../../backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      HTTP_ADDR: ":8080"
+      APP_ENV: ${APP_ENV:-development}
+      DATABASE_URL: postgres://${POSTGRES_USER:-aime}:${POSTGRES_PASSWORD:-aime}@db:5432/${POSTGRES_DB:-aime}?sslmode=disable
+    expose:
+      - "8080"
+
+  caddy:
+    image: caddy:latest
+    profiles: ["edge"] # not needed for local dev for now
+    restart: unless-stopped
+    depends_on: [backend]
+    ports:
+      - "127.0.0.1:80:80"
+    volumes:
+      - ../caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+
+  prometheus:
+    image: prom/prometheus:latest
+    profiles: ["monitoring"]
+    restart: unless-stopped
+    volumes:
+      - ../prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    expose:
+      - "9090" # internal only
+  
+  grafana:
+    image: grafana/grafana:latest
+    profiles: ["monitoring"]
+    restart: unless-stopped
+    depends_on: [prometheus]
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ../grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "127.0.0.1:3000:3000" # localhost only in base
+    
+volumes:
+  db-data:
+  prometheus-data:
+  grafana-data:

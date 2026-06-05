@@ -1,0 +1,8 @@
+# server edge overlay... makes services reachable over wg
+services:
+  caddy:
+    ports:
+      - "${WG_ADDR}:80:80"
+  grafana:
+    ports:
+      - "${WG_ADDR}:3000:3000"
