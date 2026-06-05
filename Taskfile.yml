@@ -40,7 +40,7 @@ tasks:
 
         echo "Backend (Golang)"
         check go "https://go.dev/doc/install"
-        check golangci-lint "linting - go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest"
+        check golangci-lint "linting - brew install golangci-lint  (or https://golangci-lint.run/welcome/install)"
 
         echo
         echo "Frontend (Tauri + React)"

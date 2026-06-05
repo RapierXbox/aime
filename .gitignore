@@ -5,13 +5,6 @@ frontend/.env
 # go
 backend/bin/
 
-# node
-node_modues/
-frontend/dist/
-
-# rust
-target/
-
 # ansible rendered + secrets
 deploy/caddy/Caddyfile
 deploy/ansible/invntory/group_vars/all/vault.yml
