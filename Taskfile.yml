@@ -1,0 +1,180 @@
+version: '3'
+
+dotenv: ['.env']
+
+vars:
+  COMPOSE: docker compose --env-file .env -f /deploy/compose/docker-compose.yml
+  ANSIBLE: ansible-playbook -i deploy/ansible/inventory/hosts.yml deploy/ansible/playbook.yml
+
+tasks:
+  default:
+    cmds: [task --list]
+    silent: true
+
+  setup:
+    desc: "one time setups: verify tools, create env, install deps"
+    cmds:
+      - task: doctor
+      - task: env
+      - task: deps:backend
+      - task: deps:frontend
+
+  doctor:
+    desc: "check that every tool is installed for dev"
+    silent: true
+    cmds:
+      - |
+        missing=0
+        warn=0
+
+        check() {
+          # $1: command to look for $2: hint if missing
+          if command -v "$1" >/dev/null 2>&1; then
+            ver=$( { "$1" --version 2>/dev/null || "$1" version 2>/dev/null; } | head -n1)
+            printf ' \033[32m\u2713\033[0m %-16s %s\n' "$1" "$ver"
+          else
+            printf ' \033[31m\u2717\033[0m %-16s MISSING - %s\n' "$1" "$2"
+            missing=$((missing + 1))
+          fi
+        }
+
+        echo "Backend (Golang)"
+        check go "https://go.dev/doc/install"
+        check golangci-lint "linting - go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest"
+
+        echo
+        echo "Frontend (Tauri + React)"
+        check node "js runtime - https://github.com/nvm-sh/nvm"
+        check pnpm "js package manager - corepack enable pnpm"
+        check rustc "rust compiler - https://rustup.rs"
+        check cargo "rust/tauri build - https://rustup.rs"
+
+        echo
+        echo "Infra / Deploy"
+        check docker "https://docs.docker.com/engine/install"
+        if command -v docker >/dev/null 2>&1; then
+          if docker compose version >/dev/null 2>&1; then
+            printf ' \033[32m\u2713\033[0m %-16s %s\n' "compose" "$(docker compose version | head -n1)"
+          else
+            printf ' \033[31m\u2717\033[0m %-16s MISSING - docker compose plugin\n' "compose"
+            missing=$((missing + 1))
+          fi
+        fi
+        check ansible "https://docs.ansible.com/projects/ansible/latest/installation_guide/intro_installation.html"
+        check task "how are you even running this?! anyways https://taskfile.dev"
+
+        echo
+        echo "Tauri linux system libaries (warn)"
+        if command -v pkg-config >/dev/null 2>&1; then
+          for lib in gtk+-3.0 webkit2gtk-4.1 librsvg-2.0; do
+            if pkg-config --exits "$lib" 2>/dev/null; then
+              printf ' \033[32m\u2713\033[0m %-16s %s\n' "$lib" "$(pkg-config --modversion "$lib")"
+            else
+              printf ' \033[33m!\033[0m %-16s not found\n' "$lib"
+              warn=$((warn + 1))
+            fi
+          done
+        else
+          printf ' \033[33m!\033[0m pkg-config not found... skipping lib checks\n'
+          warn=$((warn + 1))
+        fi
+
+        echo
+        if [ "$warn" -gt 2]; then
+          echo "Tauri deps (deb): sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev"
+          exit 1
+        fi
+        printf ' \033[32m\u2713 all required dev tools installed :) \033[0m\n'
+  
+  env:
+    desc: "create local .env from .env.example (if it doesnt already exist)"
+    cmds: [cp .env.example .env]
+    status: [test -f .env]
+
+  deps:backend:
+    dir: backend
+    cmds: [go mod download]
+
+  deps:frontend:
+    dir: frontend
+    cmds: [pnpm install]
+
+  # dev loop
+  dev:backend:
+    desc: "run the go api locally (needs task db:up first)"
+    dir: backend
+    cmds: [go run ./cmd/server]
+
+  dev:frontend:
+    desc: "run the tauri + vite desktop app"
+    dir: frontend
+    cmds: [pnpm tauri dev]
+  
+  # docker stack
+  db:up:
+    desc: "start only postgres in docker"
+    cmds: ['{{.COMPOSE}} up -d db']
+  
+  db:down:
+    desc: "stop postgres"
+    cmds: ['{{.COMPOSE}} stop db']
+
+  up:
+    desc: "build and start the full stack in docker"
+    cmds: ['{{.COMPOSE}} up -d --build']
+
+  down:
+    desc: "stop and remove stack"
+    cmds: ['{{.COMPOSE}} down']
+
+  logs:
+    desc: "tail stack logs"
+    cmds: ['{{.COMPOSE}} logs -f']
+
+  ps:
+    desc: "show stack status"
+    cmds: ['{{.COMPOSE}} ps']
+
+  # quality
+  build:
+    desc: "compile the backend binary"
+    dir: backend
+    sources: ['**/*.go', go.mod, go.sum]
+    generates: [bin/aime-server]
+    cmds: [go build -o bin/aime-server ./cmd/server]
+
+  test:
+    desc: "run backend tests (there will be none lol)"
+    dir: backend
+    cmds: [go test ./...]
+
+  lint:
+    desc: lint backend and frontend
+    deps: [lint:backend, lint:frontend]
+
+  lint:backend:
+    dir: backend
+    cmds: [golangci-lint run]
+
+  lint:frontend:
+    dir: frontend
+    cmds: [pnpm lint]
+  
+  fmt:
+    desc: "format go code"
+    dir: backend
+    cmds: [go fmt ./...]
+
+  tidy:
+    desc: tidy go.mod/go.sum
+    dir: backend
+    cmds: [go mod tidy]
+  
+  # deploy
+  deploy:dev:
+    desc: "deploy to devserver via ansible"
+    cmds: ['{{.ANSIBLE}} --limit dev --ask-vault-pass {{.CLI_ARGS}}']
+
+  deploy:prod:
+    desc: "deploy to prodserver via ansible"
+    cmds: ['{{.ANSIBLE}} --limit prod --ask-vault-pass {{.CLI_ARGS}}']

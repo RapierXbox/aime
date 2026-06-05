@@ -14,4 +14,9 @@ Stack:
         Golang with cgo + Postgres
     Fronted:
         Tauri + React Vite
-Deployed using Ansible and Docker Compose. AS bu
+Deployed using Ansible and Docker Compose.
+
+Getting Started:
+Install https://taskfile.dev
+run *task* to see all commands
+run *task setup* to setup everything
