@@ -3,7 +3,7 @@ version: '3'
 dotenv: ['.env']
 
 vars:
-  COMPOSE: docker compose --env-file .env -f /deploy/compose/docker-compose.yml
+  COMPOSE: docker compose --env-file .env -f deploy/compose/docker-compose.yml
 
 tasks:
   default:
