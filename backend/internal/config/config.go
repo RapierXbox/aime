@@ -22,7 +22,7 @@ func Load() (*Config, error) {
 		return nil, errors.New("DATABASE_URL not defined or empty!")
 	}
 	env := getenv("APP_ENV", "dev")
-	if env != "env" && env != "prod" {
+	if env != "dev" && env != "prod" {
 		return nil, fmt.Errorf("APP_ENV not valid... expectet 'dev' or 'prod', got %s", env)
 	}
 	backend := getenv("BACKEND", "onnx")
