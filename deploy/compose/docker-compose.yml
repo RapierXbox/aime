@@ -1,5 +1,4 @@
 name: "aime"
-version: "3"
 
 services:
   db:
@@ -10,7 +9,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aime}
       POSTGRES_DB: ${POSTGRES_DB:-aime}
     volumes:
-      - db-data:/var/lib/postgresql/data
+      - db-data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg is_ready -U ${POSTGRES_USER:-aime} -d ${POSTGRES_DB:-aime}"]
       interval: 5s
