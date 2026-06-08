@@ -1,0 +1,60 @@
+name: Deploy
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy-prod:
+    name: Deploy → prod
+    runs-on: ubuntu-latest
+    environment: prod
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Task
+        uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Ansible
+        run: |
+          pip install --upgrade pip
+          pip install ansible
+
+      - name: Install Ansible collections
+        run: task deps:ansible
+
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/ci_key
+          chmod 600 ~/.ssh/ci_key
+          cat >> ~/.ssh/config << 'EOF'
+          Host jump
+            HostName ${{ vars.VM_HOST }}
+            User ${{ vars.VM_USER }}
+            IdentityFile ~/.ssh/ci_key
+            StrictHostKeyChecking no
+
+          Host slowpi
+            HostName localhost
+            Port 9999
+            User deploy
+            ProxyJump jump
+            IdentityFile ~/.ssh/ci_key
+            StrictHostKeyChecking no
+          EOF
+          chmod 600 ~/.ssh/config
+
+      - name: Write vault password
+        run: echo "${{ secrets.ANSIBLE_VAULT_PASS }}" > /tmp/vault_pass
+
+      - name: Deploy
+        run: task deploy:prod VAULT_PASS_FILE=/tmp/vault_pass
+
+      - name: Cleanup vault password
+        if: always()
+        run: rm -f /tmp/vault_pass

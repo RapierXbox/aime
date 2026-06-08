@@ -14,8 +14,10 @@ import {
   selectCurrentPage,
   type Page,
 } from "./lib/NavigationStore";
-import LoginPage from "./components/page/LoginPage";
+import LoginPage from "./components/page/AimeLogin";
 import { ArrowLeft, ArrowRight } from "lucide-react";
+import MainPage from "./components/page/MainPage";
+import Settings from "./components/page/Settings";
 
 function App() {
   useEffect(() => {
@@ -40,48 +42,54 @@ function App() {
   return (
     <SidebarProvider>
       <AppSidebar side="left" className="" />
-      <SidebarInset>
+      <SidebarInset className="min-h-0 overflow-hidden">
         <header
           className="flex h-8 shrink-0 items-center gap-2 transition-[width,height]
           ease-linear group-has-data-[collapsible=icon]/sidebar-wrapper:h-12
+          outline outline-border bg-muted
           "
         >
-          <div className="flex items-center gap-2 px-4">
-            <SidebarTrigger
-              className="-ml-1 "
-              color="var(--muted-foreground)"
-            />
-            <div className="flex flex-row items-center">
-              <div
-                className="p-2  hover:bg-muted rounded-l-md h-6 flex items-center "
-                aria-label="Previous page"
-                onClick={navigateBack}
-              >
-                <ArrowLeft color="var(--muted-foreground)" size={16} />
-              </div>
-              <Separator orientation="vertical" className="h-6" />
-              <div
-                className="p-2 hover:bg-muted rounded-r-md h-6 flex items-center"
-                aria-label="Next page"
-                onClick={navigateForward}
-              >
-                <ArrowRight color="var(--muted-foreground)" size={16} />
-              </div>
-            </div>
+
+          <SidebarTrigger className="" color="var(--muted-foreground)" />
+          <div className="flex flex-row items-center flex-1">
+            <button
+              className="p-2 hover:bg-border rounded-l-md h-6 flex items-center "
+              aria-label="Previous page"
+              onClick={navigateBack}
+            >
+              <ArrowLeft color="var(--muted-foreground)" size={16} />
+            </button>
+            <Separator orientation="vertical" className="h-6" />
+
+            <button
+              className="p-2 hover:bg-border rounded-r-md h-6 flex items-center"
+              aria-label="Next page"
+              onClick={navigateForward}
+            >
+              <ArrowRight color="var(--muted-foreground)" size={16} />
+            </button>
+
+
+
           </div>
+          <span
+            id="currentPage"
+            className="font-heading text-muted-foreground mx-2 select-none ml-auto"
+          >
+            {currentPage.page}
+          </span>
         </header>
-        <div className="flex flex-1 flex-col gap-4 p-4 pt-0">
-          {pageMap[currentPage.page]()}
-        </div>
+        <div className="flex flex-1 min-h-0">{pageMap[currentPage.page]()}</div>
       </SidebarInset>
     </SidebarProvider>
   );
 }
 
+/// Map of page components by page name
 const pageMap: Record<Page["page"], () => ReactNode> = {
   login: () => <LoginPage />,
-  main: () => <div>Main</div>,
-  settings: () => <div>Settings</div>,
+  main: () => <MainPage />,
+  settings: () => <Settings />,
 };
 
 export default App;

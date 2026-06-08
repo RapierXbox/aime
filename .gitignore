@@ -9,3 +9,4 @@ backend/bin/
 deploy/caddy/Caddyfile
 deploy/ansible/invntory/group_vars/all/vault.yml
 *.retry
+CLAUDE.md

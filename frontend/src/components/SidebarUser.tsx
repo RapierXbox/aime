@@ -14,6 +14,7 @@ import {
 import { useAuthStore, type AimeAccount } from "@/lib/AuthStore";
 import { LogOutIcon, Settings } from "lucide-react";
 import { useNavigationStore } from "@/lib/NavigationStore";
+import { Button } from "./ui/button";
 
 export function SidebarUser() {
   const aimeAccount: AimeAccount | null = useAuthStore(
@@ -32,7 +33,7 @@ export function SidebarUser() {
               className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground
               w-full m-0"
             >
-              <div className="h-8 w-8 rounded-full text-center flex bg-muted items-center justify-center">
+              <div className="h-8 w-8 rounded-full text-center flex bg-muted items-center justify-center outline-border outline">
                 {aimeAccount ? aimeAccount?.name.substring(0, 2) : "!"}
               </div>
               <div className="grid flex-1 text-left text-sm leading-tight">
@@ -53,8 +54,15 @@ export function SidebarUser() {
             sideOffset={4}
           >
             <DropdownMenuLabel className="p-0 font-normal">
-              <div className="flex items-center gap-2 px-1 py-1.5 text-left text-sm">
-                <div className="h-8 w-8 rounded-full text-center flex bg-muted items-center justify-center">
+              <Button
+                variant="ghost"
+                className="flex items-center gap-2 px-1 py-6 text-left text-sm"
+                onClick={() => navigateTo({ page: "login", ephemeral: true })}
+              >
+                <div
+                  className="h-8 w-8 rounded-full text-center flex bg-muted
+                  items-center justify-center outline outline-border"
+                >
                   {aimeAccount ? aimeAccount?.name.substring(0, 2) : "!"}
                 </div>
                 <div className="grid flex-1 text-left text-sm leading-tight">
@@ -63,18 +71,26 @@ export function SidebarUser() {
                   </span>
                   <span className="truncate text-xs">{aimeAccount?.email}</span>
                 </div>
-              </div>
+              </Button>
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={() => navigateTo({ page: "settings" })}>
+            <DropdownMenuItem
+              onClick={() =>
+                navigateTo({ page: "settings", section: "application" })
+              }
+            >
               <Settings />
               Settings
             </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem>
-              <LogOutIcon />
-              Log out
-            </DropdownMenuItem>
+            {!!aimeAccount && (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem>
+                  <LogOutIcon />
+                  Log out
+                </DropdownMenuItem>
+              </>
+            )}
           </DropdownMenuContent>
         </DropdownMenu>
       </SidebarMenuItem>

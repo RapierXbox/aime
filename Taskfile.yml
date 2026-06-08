@@ -4,6 +4,9 @@ dotenv: ['.env']
 
 vars:
   COMPOSE: docker compose --env-file .env -f deploy/compose/docker-compose.yml
+  ANSIBLE: ansible-playbook
+  ANSIBLE_DIR: deploy/ansible
+  VAULT_FLAG: '{{if .VAULT_PASS_FILE}}--vault-password-file {{.VAULT_PASS_FILE}}{{else}}--ask-vault-pass{{end}}'
 
 tasks:
   default:
@@ -176,9 +179,11 @@ tasks:
   
   # deploy
   deploy:dev:
-    desc: "deploy to devserver via ansible"
-    cmds: ['{{.ANSIBLE}} -i inventory/hosts.yml playbook.yml --limit dev --ask-vault-pass {{.CLI_ARGS}}']
+    desc: "deploy to devserver via ansible (set VAULT_PASS_FILE for non-interactive)"
+    dir: '{{.ANSIBLE_DIR}}'
+    cmds: ['{{.ANSIBLE}} playbook.yml --limit dev {{.VAULT_FLAG}} {{.CLI_ARGS}}']
 
   deploy:prod:
-    desc: "deploy to prodserver via ansible"
-    cmds: ['{{.ANSIBLE}} -i inventory/hosts.yml playbook.yml --limit prod --ask-vault-pass {{.CLI_ARGS}}']
+    desc: "deploy to prodserver via ansible (set VAULT_PASS_FILE for non-interactive)"
+    dir: '{{.ANSIBLE_DIR}}'
+    cmds: ['{{.ANSIBLE}} playbook.yml --limit prod {{.VAULT_FLAG}} {{.CLI_ARGS}}']
