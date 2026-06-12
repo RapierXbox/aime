@@ -1,6 +1,6 @@
 version: '3'
 
-dotenv: ['.env']
+dotenv: ['.env', 'backend/.env']
 
 vars:
   COMPOSE: docker compose --env-file .env -f deploy/compose/docker-compose.yml
@@ -90,9 +90,15 @@ tasks:
         printf ' \033[32m\u2713 all required dev tools installed :) \033[0m\n'
   
   env:
-    desc: "create local .env from .env.example (if it doesnt already exist)"
-    cmds: [cp .env.example .env]
-    status: [test -f .env]
+    desc: "create local .env files from .env.example (if they dont already exist)"
+    cmds:
+      - cp .env.example .env
+      - cp backend/.env.example backend/.env
+      - cp frontend/.env.example frontend/.env
+    status:
+      - test -f .env
+      - test -f backend/.env
+      - test -f frontend/.env
 
   deps:backend:
     dir: backend
