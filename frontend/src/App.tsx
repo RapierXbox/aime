@@ -49,18 +49,19 @@ function App() {
           outline outline-border bg-muted
           "
         >
-
-          <SidebarTrigger className="" color="var(--muted-foreground)" />
+          <SidebarTrigger
+            className="hover:bg-border ml-1"
+            color="var(--muted-foreground)"
+          />
           <div className="flex flex-row items-center flex-1">
             <button
-              className="p-2 hover:bg-border rounded-l-md h-6 flex items-center "
+              className="p-2 pl-1 hover:bg-border rounded-l-md h-6 flex items-center"
               aria-label="Previous page"
               onClick={navigateBack}
             >
               <ArrowLeft color="var(--muted-foreground)" size={16} />
             </button>
             <Separator orientation="vertical" className="h-6" />
-
             <button
               className="p-2 hover:bg-border rounded-r-md h-6 flex items-center"
               aria-label="Next page"
@@ -68,9 +69,6 @@ function App() {
             >
               <ArrowRight color="var(--muted-foreground)" size={16} />
             </button>
-
-
-
           </div>
           <span
             id="currentPage"

@@ -1,0 +1,5 @@
+{
+  "build": {
+    "runner": "./dev-runner-macos.sh"
+  }
+}

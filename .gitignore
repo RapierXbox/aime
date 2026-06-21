@@ -11,3 +11,6 @@ deploy/caddy/Caddyfile
 deploy/ansible/invntory/group_vars/all/vault.yml
 *.retry
 CLAUDE.md
+frontend/src-tauri/google_client_secret.json
+
+id_ed25519

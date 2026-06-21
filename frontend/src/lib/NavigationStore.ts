@@ -1,19 +1,20 @@
 import type { SettingsSection } from "@/components/page/Settings";
 import { create } from "zustand";
+import { shallowCompare } from "./utils";
 
 export type Page =
   | {
-    page: "login";
-    // meaning this page should not be added to the navigation stack
-    ephemeral: true;
-  }
+      page: "login";
+      // meaning this page should not be added to the navigation stack
+      ephemeral: true;
+    }
   | {
-    page: "main";
-  }
+      page: "main";
+    }
   | {
-    page: "settings";
-    section: SettingsSection;
-  };
+      page: "settings";
+      section: SettingsSection;
+    };
 
 type NavigationStoreState = {
   navStack: Page[];
@@ -43,7 +44,7 @@ export const useNavigationStore = create<NavigationStore>()((set) => ({
   currentPageIndex: 0,
   navigateTo: (page: Page) => {
     set((state) => {
-      if (state.navStack[state.currentPageIndex] === page) {
+      if (shallowCompare(state.navStack[state.currentPageIndex], page)) {
         return {};
       }
 

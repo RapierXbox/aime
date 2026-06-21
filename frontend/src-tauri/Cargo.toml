@@ -17,6 +17,9 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [build-dependencies]
 tauri-build = { version = "2.6.2", features = [] }
 
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+
 [dependencies]
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
@@ -24,3 +27,13 @@ log = "0.4"
 tauri = { version = "2.11.2", features = [] }
 tauri-plugin-log = "2"
 tauri-plugin-keyring = "0.1.0"
+google-gmail1 = "7.0.0"
+open = "5.3.5"
+rust-argon2 = "3.0.0"
+rand = "0.9.4"
+async-trait = "0.1.89"
+sqlx = { version = "0.8.6", features = ["runtime-tokio", "sqlite"] }
+thiserror = "2.0.18"
+zeroize = "1.8.2"
+oauth2 = {version= "5.0.0", features= ["timing-resistant-secret-traits"] }
+tokio = { version = "1.52.3", features = ["net"] }

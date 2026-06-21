@@ -11,15 +11,13 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
 } from "@/components/ui/sidebar";
-import { useAuthStore, type AimeAccount } from "@/lib/AuthStore";
+import { useAuthStore, type AimeUser } from "@/lib/AuthStore";
 import { LogOutIcon, Settings } from "lucide-react";
 import { useNavigationStore } from "@/lib/NavigationStore";
 import { Button } from "./ui/button";
 
 export function SidebarUser() {
-  const aimeAccount: AimeAccount | null = useAuthStore(
-    (state) => state.account,
-  );
+  const aimeAccount: AimeUser | null = useAuthStore((state) => state.account);
 
   const navigateTo = useNavigationStore((state) => state.navigateTo);
 
@@ -31,13 +29,13 @@ export function SidebarUser() {
             <SidebarMenuButton
               size="lg"
               className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground
-              w-full m-0"
+              w-full m-0 hover:bg-border transition"
             >
-              <div className="h-8 w-8 rounded-full text-center flex bg-muted items-center justify-center outline-border outline">
+              <div className="h-8 w-8 rounded-full text-center flex bg-muted items-center justify-center outline-border outline text-foreground">
                 {aimeAccount ? aimeAccount?.name.substring(0, 2) : "!"}
               </div>
               <div className="grid flex-1 text-left text-sm leading-tight">
-                <span className="truncate font-medium">
+                <span className="truncate font-medium text-foreground">
                   {aimeAccount?.name ?? "Logged Out"}
                 </span>
                 <span className="truncate text-xs text-muted-foreground">
@@ -57,7 +55,9 @@ export function SidebarUser() {
               <Button
                 variant="ghost"
                 className="flex items-center gap-2 px-1 py-6 text-left text-sm"
-                onClick={() => navigateTo({ page: "login", ephemeral: true })}
+                onClick={() =>
+                  navigateTo({ page: "settings", section: "account" })
+                }
               >
                 <div
                   className="h-8 w-8 rounded-full text-center flex bg-muted

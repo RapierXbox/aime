@@ -16,9 +16,11 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   return (
     <Sidebar {...props}>
       <SidebarHeader className="flex">
-        <button className=" flex-1 font-heading text-2xl text-right select-none"
-          onClick={() => navigateTo({ page: "main" })}>
-          Aime
+        <button
+          className=" flex-1 font-heading text-2xl text-right select-none text-foreground"
+          onClick={() => navigateTo({ page: "main" })}
+        >
+          AiMe
         </button>
       </SidebarHeader>
       <SidebarContent></SidebarContent>

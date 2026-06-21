@@ -1,13 +1,13 @@
 import { create } from "zustand";
 
-export type AimeAccount = {
+export type AimeUser = {
   id: string;
   name: string;
   email: string;
 };
 
 type AuthStoreState = {
-  account: AimeAccount | null;
+  account: AimeUser | null;
 };
 
 type AuthStoreActions = {
@@ -17,7 +17,7 @@ type AuthStoreActions = {
 type AuthStore = AuthStoreState & AuthStoreActions;
 
 export const useAuthStore = create<AuthStore>()((set) => ({
-  account: null as AimeAccount | null,
+  account: null as AimeUser | null,
   login: () => {
     set({
       account: { id: "0", name: "Test User", email: "test@aime.ai" },
