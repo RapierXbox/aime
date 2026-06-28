@@ -13,7 +13,7 @@ use ::tokio::{
     net::TcpListener,
     sync::Mutex,
 };
-use google_gmail1::api::Profile;
+use google_gmail1::{api::Profile, yup_oauth2::access_token};
 use log::{error, info};
 use oauth2::{basic::BasicClient, EndpointSet, RefreshToken};
 use oauth2::{reqwest, EndpointNotSet};
@@ -56,6 +56,7 @@ static CLIENT_SECRET: LazyLock<OAuthConfig> = LazyLock::new(|| {
 
 #[derive(Clone, Debug)]
 struct TokenInfo {
+    // TODO: replace with AccessToken type
     pub access_token: String,
     pub refresh_token: RefreshToken,
     pub expires_on: SystemTime,
@@ -131,11 +132,22 @@ fn fmt_keyring_usr(email_addr: &str) -> String {
     format!("gmail:refresh:{}", email_addr)
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Auth {
     // Auth internally refreshes the token when it expires,
     // sharing the same auth state across all threads
     inner: Arc<Inner>,
+}
+
+impl std::fmt::Debug for Auth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Auth")
+            .field("token", &self.inner.token)
+            .field("profile", &self.inner.profile)
+            .field("oauth_client", &self.inner.oauth_client)
+            .field("http_client", &"reqwest::Client")
+            .finish()
+    }
 }
 
 /// Manages Authorization state
@@ -237,15 +249,21 @@ impl Inner {
     }
 
     async fn refresh(&self, token: &mut TokenInfo) -> Result<(), crate::Error> {
+        info!("Refreshing token for {:?}", token);
+
         let res = self
             .oauth_client
             .exchange_refresh_token(&token.refresh_token)
             .request_async(&self.http_client)
             .await
             .expect("TODO refresh token failed");
-        let new_refresh_token = res.refresh_token().unwrap().clone();
 
-        token.refresh_token = new_refresh_token;
+        info!("received {res:?}");
+
+        let new_access_token = res.access_token().clone();
+        // TODO check if a new refresh token is returned
+
+        token.access_token = new_access_token.into_secret();
         Ok(())
     }
 }
@@ -295,7 +313,7 @@ async fn oauth2_flow(http_client: reqwest::Client) -> Result<TempAuth, crate::Er
     let mut buf = String::new();
     // Read the first line of the response
     reader.read_line(&mut buf).await?;
-    println!("got={}", buf);
+    info!("first line oauth2 redirect response got={}", buf);
     // respond with a 200 OK
     reader
         .into_inner() // respond with a small html page

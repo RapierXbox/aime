@@ -4,6 +4,8 @@ import { invoke } from "@tauri-apps/api/core";
 import React, { useEffect } from "react";
 import googleSigninLight from "@/assets/google_signin_light.svg";
 import googleSigninDark from "@/assets/google_signin_dark.svg";
+import { Button } from "@/components/ui/button";
+import { DevOnly } from "@/components/dev/DevOnly";
 
 /*
 /// The user's email address.
@@ -20,12 +22,12 @@ pub messages_total: Option<i32>,
 #[serde(rename = "threadsTotal")]
 pub threads_total: Option<i32>,*/
 type GmailProfile = {
-  id: number,
-  name: string,
+  id: number;
+  name: string;
 };
 
 const AccountSettings: React.FC = () => {
-  const _user = useAuthStore((state) => state.account);
+  // const _user = useAuthStore((state) => state.account);
   const user = {
     name: "John Doe",
     email: "john.doe@example.com",
@@ -33,10 +35,11 @@ const AccountSettings: React.FC = () => {
 
   const [accs, setAccs] = React.useState<GmailProfile[]>([]);
 
-  const load_email_accs = () => invoke("email_list_accounts").then((it) => {
-    // TODO: typing
-    setAccs(it as GmailProfile[]);
-  });
+  const load_email_accs = () =>
+    invoke("email_list_accounts").then((it) => {
+      // TODO: typing
+      setAccs(it as GmailProfile[]);
+    });
 
   useEffect(() => {
     load_email_accs();
@@ -72,19 +75,37 @@ const AccountSettings: React.FC = () => {
               });
             }}
           >
-            <img src={googleSigninLight} alt="Sign in with Google" className="block dark:hidden" />
-            <img src={googleSigninDark} alt="Sign in with Google" className="hidden dark:block" />
+            <img
+              src={googleSigninLight}
+              alt="Sign in with Google"
+              className="block dark:hidden"
+            />
+            <img
+              src={googleSigninDark}
+              alt="Sign in with Google"
+              className="hidden dark:block"
+            />
           </button>
         </div>
 
         <Separator orientation="horizontal" />
-        {
-          accs.map((acc) => <div>
-            <span className="font-medium" key={acc.id}>{acc.name}</span>
+        {accs.map((acc) => (
+          <div>
+            <span className="font-medium" key={acc.id}>
+              {acc.name}
+              <DevOnly>
+                <Button
+                  onClick={() =>
+                    invoke("dev_do_onboard_sync", { accountId: acc.id })
+                  }
+                  color="red"
+                >
+                  Onboard Sync
+                </Button>
+              </DevOnly>
+            </span>
           </div>
-          )
-        }
-
+        ))}
       </div>
     </section>
   );

@@ -15,7 +15,7 @@ pub const KEYRING_SERVICE: &str = "aime";
 #[derive(Error, Debug, Serialize)]
 pub enum Error {
     #[error("Missing database File")]
-    MissingDb,
+    MissingDbPath,
 
     #[error("Gmail error: {0}")]
     #[serde(serialize_with = "ser_as_string")]
@@ -51,6 +51,9 @@ pub enum Error {
 
     #[error("Expected different account type")]
     AccountTypeMismatch,
+
+    #[error("Gmail did not return labels")]
+    GmailMissingLabels,
 }
 
 fn ser_as_string<T, S>(err: T, serializer: S) -> Result<S::Ok, S::Error>
@@ -69,7 +72,8 @@ pub fn run() {
         .setup(setup)
         .invoke_handler(generate_handler![
             email::gmail::register_gmail_account,
-            email::email_list_accounts
+            email::email_list_accounts,
+            email::dev_do_onboard_sync
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -91,10 +95,19 @@ fn setup(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
         fs::create_dir_all(parent)?;
     }
 
-    let path_str = sqlx_dir.to_str().ok_or(Error::MissingDb)?;
+    let path_str = sqlx_dir.to_str().ok_or(Error::MissingDbPath)?;
 
     // connect_lazy braucht ein async context, daher block_on
-    let pool = async_runtime::block_on(async { sqlx::sqlite::SqlitePool::connect_lazy(path_str) })?;
+    let pool = async_runtime::block_on(async {
+        let pres = sqlx::sqlite::SqlitePool::connect_lazy(path_str);
+        match pres {
+            Ok(pool) => {
+                sqlx::migrate!().run(&pool).await?;
+                Ok(pool)
+            }
+            Err(e) => Err(e),
+        }
+    })?;
 
     // setup the email handling
     email::setup(app, &pool)?;

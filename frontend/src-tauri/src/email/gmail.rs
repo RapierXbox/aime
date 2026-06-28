@@ -17,6 +17,7 @@ pub type Gmail = google_gmail1::Gmail<HttpsConnector<HttpConnector<GaiResolver>>
 pub mod auth;
 
 #[tauri::command]
+/// register a new gmail account with the oauth2 onboarding flow
 pub async fn register_gmail_account(
     app: tauri::AppHandle,
     db_pool: State<'_, DbPool>,
@@ -52,7 +53,7 @@ pub async fn register_gmail_account(
     let auth = tmp_auth.promote(profile);
     // the gmail account with the authenticated user
 
-    email_mng.account_map.lock().await.insert(email, (id, auth));
+    email_mng.account_map.lock().await.insert(id, (email, auth));
 
     Ok(())
 }

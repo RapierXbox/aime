@@ -63,3 +63,43 @@ where
     .map(|res| res.id)
     .map_err(|e| crate::Error::SQLXError(e))
 }
+
+// https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.labels#Label
+pub struct Label {
+    pub id: String,
+    pub name: String,
+    pub message_list_visibility: Option<String>,
+    pub label_list_visibility: Option<String>,
+    pub type_: String,
+}
+
+pub enum AddLabelStatus {
+    Inserted,
+    AlreadyExists,
+}
+
+pub async fn add_label<'a, E>(executor: &'a E, label: Label) -> Result<AddLabelStatus, crate::Error>
+where
+    &'a E: Executor<'a, Database = Sqlite>,
+{
+    sqlx::query!(
+        "INSERT INTO labels (id, name, message_list_visibility, label_list_visibility, type)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT (id) DO NOTHING
+
+        ",
+        label.id,
+        label.name,
+        label.message_list_visibility,
+        label.label_list_visibility,
+        label.type_
+    )
+    .execute(executor)
+    .await
+    .map(|r| match r.rows_affected() {
+        0 => AddLabelStatus::AlreadyExists,
+        1 => AddLabelStatus::Inserted,
+        _ => unreachable!(),
+    })
+    .map_err(|e| crate::Error::SQLXError(e))
+}
