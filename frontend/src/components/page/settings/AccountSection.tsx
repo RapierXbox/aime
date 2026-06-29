@@ -1,11 +1,12 @@
 import { Separator } from "@/components/ui/separator";
 import { useAuthStore } from "@/lib/AuthStore";
-import { invoke } from "@tauri-apps/api/core";
+
 import React, { useEffect } from "react";
 import googleSigninLight from "@/assets/google_signin_light.svg";
 import googleSigninDark from "@/assets/google_signin_dark.svg";
 import { Button } from "@/components/ui/button";
 import { DevOnly } from "@/components/dev/DevOnly";
+import { commands, type ListEmailEntry } from "@/bindings";
 
 /*
 /// The user's email address.
@@ -21,10 +22,6 @@ pub messages_total: Option<i32>,
 /// The total number of threads in the mailbox.
 #[serde(rename = "threadsTotal")]
 pub threads_total: Option<i32>,*/
-type GmailProfile = {
-  id: number;
-  name: string;
-};
 
 const AccountSettings: React.FC = () => {
   // const _user = useAuthStore((state) => state.account);
@@ -33,12 +30,15 @@ const AccountSettings: React.FC = () => {
     email: "john.doe@example.com",
   };
 
-  const [accs, setAccs] = React.useState<GmailProfile[]>([]);
+  const [accs, setAccs] = React.useState<ListEmailEntry[]>([]);
 
   const load_email_accs = () =>
-    invoke("email_list_accounts").then((it) => {
-      // TODO: typing
-      setAccs(it as GmailProfile[]);
+    commands.emailListAccounts().then((it) => {
+      if (it.status === "ok") {
+        setAccs(it.data);
+      } else {
+        throw it.error;
+      }
     });
 
   useEffect(() => {
@@ -69,8 +69,12 @@ const AccountSettings: React.FC = () => {
           <button
             className="ml-auto"
             onClick={() => {
-              invoke("register_gmail_account").then((acc) => {
-                console.log(acc);
+              commands.registerGmailAccount().then((it) => {
+                console.log(it);
+                if (it.status === "error") {
+                  throw it.error;
+                }
+
                 load_email_accs();
               });
             }}
@@ -90,15 +94,13 @@ const AccountSettings: React.FC = () => {
 
         <Separator orientation="horizontal" />
         {accs.map((acc) => (
-          <div>
-            <span className="font-medium" key={acc.id}>
+          <div key={acc.id}>
+            <span className="font-medium">
               {acc.name}
               <DevOnly>
                 <Button
-                  onClick={() =>
-                    invoke("dev_do_onboard_sync", { accountId: acc.id })
-                  }
-                  color="red"
+                  onClick={() => commands.devEmailFullSync(acc.id)}
+                  variant="destructive"
                 >
                   Onboard Sync
                 </Button>

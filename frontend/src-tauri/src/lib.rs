@@ -1,47 +1,43 @@
-use std::fs;
+use std::{fs, num::NonZeroU16};
 
-use google_gmail1::hyper_util::rt::tokio;
 use log::error;
-use rand::distr::{Alphanumeric, SampleString};
 use serde::Serialize;
-use tauri::{async_runtime, generate_handler, http::StatusCode, ipc::IpcResponse, App, Manager};
-use tauri_plugin_keyring::KeyringExt;
+use specta::Type;
+
+use tauri::{async_runtime, App, Manager};
+use tauri_specta::{collect_commands, Builder};
 use thiserror::Error;
 
+#[cfg(debug_assertions)]
+use specta_typescript::Typescript;
+
 mod email;
+use email::gmail;
 
 pub const KEYRING_SERVICE: &str = "aime";
 
-#[derive(Error, Debug, Serialize)]
-pub enum Error {
+#[derive(Error, Debug, Serialize, Type)]
+pub enum AppError {
     #[error("Missing database File")]
     MissingDbPath,
 
-    #[error("Gmail error: {0}")]
-    #[serde(serialize_with = "ser_as_string")]
-    Gmail(#[from] google_gmail1::Error),
-
     #[error("Gmail api response incomplete")]
-    GmailIncomplete,
+    GmailResponseIncomplete,
 
     #[error("OAuth error")]
     OAuth,
 
     #[error("Http status: {0}")]
-    #[serde(serialize_with = "ser_as_string")]
-    HttpErr(StatusCode),
+    HttpErr(NonZeroU16),
 
-    #[error(transparent)]
-    #[serde(serialize_with = "ser_as_string")]
-    SQLXError(#[from] sqlx::Error),
+    #[error("SQLX error")]
+    SQLXError,
 
-    #[error(transparent)]
-    #[serde(serialize_with = "ser_as_string")]
-    IOError(#[from] std::io::Error),
+    #[error("IO error")]
+    IOError,
 
-    #[error(transparent)]
-    #[serde(serialize_with = "ser_as_string")]
-    UrlParseError(#[from] oauth2::url::ParseError),
+    #[error("Url parse error")]
+    UrlParseError,
 
     #[error("Failed to save credentials to keyring")]
     KeyringSaveError,
@@ -54,6 +50,15 @@ pub enum Error {
 
     #[error("Gmail did not return labels")]
     GmailMissingLabels,
+
+    #[error("SerdeJson error")]
+    SerdeJson,
+
+    #[error("Gmail error: {0}")]
+    GmailErr(#[from] gmail::GmailError),
+
+    #[error("could not parse account id")]
+    ParseAccountID,
 }
 
 fn ser_as_string<T, S>(err: T, serializer: S) -> Result<S::Ok, S::Error>
@@ -67,14 +72,23 @@ where
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let mut builder = Builder::<tauri::Wry>::new()
+        // Then register them (separated by a comma)
+        .commands(collect_commands![
+            gmail::register_gmail_account,
+            email::email_list_accounts,
+            email::dev_email_full_sync
+        ]);
+
+    #[cfg(debug_assertions)] // <- Only export on non-release builds
+    builder
+        .export(Typescript::default(), "../src/bindings.ts")
+        .expect("Failed to export typescript bindings");
+
     tauri::Builder::default()
         .plugin(tauri_plugin_keyring::init())
         .setup(setup)
-        .invoke_handler(generate_handler![
-            email::gmail::register_gmail_account,
-            email::email_list_accounts,
-            email::dev_do_onboard_sync
-        ])
+        .invoke_handler(builder.invoke_handler())
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
@@ -95,7 +109,7 @@ fn setup(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
         fs::create_dir_all(parent)?;
     }
 
-    let path_str = sqlx_dir.to_str().ok_or(Error::MissingDbPath)?;
+    let path_str = sqlx_dir.to_str().ok_or(AppError::MissingDbPath)?;
 
     // connect_lazy braucht ein async context, daher block_on
     let pool = async_runtime::block_on(async {

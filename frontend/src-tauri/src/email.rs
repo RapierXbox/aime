@@ -79,8 +79,10 @@ pub fn setup(app: &mut App, db: &DbPool) -> Result<(), Box<dyn std::error::Error
 
     // populate the email account map from the db
     for (email, account_id, auth_client) in auth_clients {
-        let auth_client = auth_client?;
-        email_account_map.insert(account_id, (email, auth_client));
+        match auth_client {
+            Ok(client) => { email_account_map.insert(account_id, (email, client)); }
+            Err(e) => error!("skipping account {account_id} ({email}): failed to load credentials: {e:?}"),
+        }
     }
 
     info!("{email_account_map:?}");
@@ -95,102 +97,45 @@ pub fn setup(app: &mut App, db: &DbPool) -> Result<(), Box<dyn std::error::Error
 }
 
 // Use for listing email accounts in the UI
-#[derive(Serialize, Debug, Clone)]
+#[derive(Serialize, Debug, Clone, specta::Type)]
 pub struct ListEmailEntry {
-    id: i64,
+    id: String,
     name: String,
 }
 
 #[tauri::command]
+#[specta::specta]
 /// list all email accounts registered with the application
 pub async fn email_list_accounts(
     email: State<'_, EmailManager>,
-) -> Result<Vec<ListEmailEntry>, crate::Error> {
+) -> Result<Vec<ListEmailEntry>, crate::AppError> {
     let lock = email.account_map.lock().await;
     Ok(lock
         .iter()
         .map(|(&id, (name, _))| ListEmailEntry {
-            id,
+            id: id.to_string(),
             name: name.clone(),
         })
         .collect())
 }
 
 #[tauri::command]
-pub async fn dev_do_onboard_sync(
-    account_id: i64,
+#[specta::specta]
+/// Syncs the email account with the given ID
+///
+/// ### Arguments
+/// - `account_id`: The ID of the account to sync, a u64 serialized as a String
+///
+pub async fn dev_email_full_sync(
+    account_id: String,
     email_mng: State<'_, EmailManager>,
     db_pool: State<'_, DbPool>,
-) -> Result<(), crate::Error> {
+) -> Result<(), crate::AppError> {
     info!("do_onboard_sync for {account_id}");
 
-    onboard_sync(account_id, email_mng, db_pool).await
-}
+    let account_id = account_id
+        .parse::<i64>()
+        .map_err(|_| crate::AppError::ParseAccountID)?;
 
-pub async fn onboard_sync(
-    account_id: i64,
-    email_mng: State<'_, EmailManager>,
-    db_pool: State<'_, DbPool>,
-) -> Result<(), crate::Error> {
-    // get the account and instantiate the gmail client
-    let lock = email_mng.account_map.lock().await;
-    let (_email, auth_ref) = lock.get(&account_id).unwrap();
-
-    let auth = auth_ref.clone();
-    let client = email_mng.http_client.clone();
-
-    let gmail = Gmail::new(client, auth);
-
-    // first, list the labels and store them in the db
-    let (_, res) = gmail.users().labels_list("me").doit().await?;
-
-    let Some(labels) = res.labels else {
-        error!("gmail sync no labels returned");
-        return Err(crate::Error::GmailMissingLabels);
-    };
-
-    info!("Got Labels: {labels:#?}");
-
-    // wether any new label was added
-    let mut label_status = AddLabelStatus::AlreadyExists;
-
-    // From docs:
-    // List of labels. Note that each label resource only contains an id, name, messageListVisibility, labelListVisibility, and type
-    for label in labels {
-        let Label {
-            id: Some(id),
-            name: Some(name),
-            message_list_visibility,
-            label_list_visibility,
-            type_: Some(type_),
-            ..
-        } = label
-        else {
-            error!("label missing required fields {:?}", label);
-            unreachable!();
-        };
-
-        let status = add_label(
-            &db_pool,
-            repo::Label {
-                id,
-                name,
-                message_list_visibility,
-                label_list_visibility,
-                type_,
-            },
-        )
-        .await?;
-
-        if matches!(status, AddLabelStatus::Inserted) {
-            label_status = AddLabelStatus::Inserted;
-        }
-    }
-
-    // TODO: invalidate frontend labels
-    if matches!(label_status, AddLabelStatus::Inserted) {
-        info!("New Label was added");
-    }
-
-    Ok(())
+    gmail::full_sync(account_id, email_mng, db_pool).await
 }
