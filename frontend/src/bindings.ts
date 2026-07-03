@@ -18,14 +18,37 @@ export const commands = {
 };
 
 /* Types */
-export type AppError = "MissingDbPath" | "GmailResponseIncomplete" | "OAuth" | ({ HttpErr: number }) & { GmailErr?: never } | "SQLXError" | "IOError" | "UrlParseError" | "KeyringSaveError" | "KeyringLoadError" | "AccountTypeMismatch" | "GmailMissingLabels" | "SerdeJson" | ({ GmailErr: GmailError }) & { HttpErr?: never } | "ParseAccountID";
+export type AppError = "MissingDbPath" | "GmailResponseIncomplete" | "OAuth" | ({ HttpErr: number }) & { GmailApiErr?: never; GmailErr?: never; Sqlx?: never } | ({ Sqlx: SqlxError }) & { GmailApiErr?: never; GmailErr?: never; HttpErr?: never } | "IOError" | "UrlParseError" | "KeyringSaveError" | "KeyringLoadError" | "AccountTypeMismatch" | "GmailMissingLabels" | "SerdeJson" | "AccountNotFound" | ({ GmailErr: GmailError }) & { GmailApiErr?: never; HttpErr?: never; Sqlx?: never } | ({ GmailApiErr: GmailApiError }) & { GmailErr?: never; HttpErr?: never; Sqlx?: never } | "ParseAccountID" | "InvalidEmailBody";
 
-export type GmailError = "AuthUrlParse" | "TokenUrlParse" | "RedirectUrlParse" | "ListLabels" | "GetMessage" | "ListMessages" | "GetProfile" | "OauthRedirect" | "OauthHttpResp" | "OauthTcpListen";
+export type GmailApiError = "HttpError" | ({ UploadSizeLimitExceeded: {
+	resource_size: number | null,
+	max_size: number | null,
+} }) & { Failure?: never } | "BadRequest" | "MissingAPIKey" | "MissingToken" | "Cancelled" | "FieldClash" | "JsonDecodeError" | ({ Failure: number }) & { UploadSizeLimitExceeded?: never } | "Io";
+
+export type GmailError = "AuthUrlParse" | "TokenUrlParse" | "RedirectUrlParse" | "OauthRedirect" | "OauthHttpResp" | "OauthTcpListen" | "MessageNotSkeleton" | "UnsupportedMimeVer" | { MissingField: MissingField };
 
 export type ListEmailEntry = {
 	id: string,
 	name: string,
 };
+
+export type MissingField = "ThreadId" | "SyncCursor" | "LabelIds" | "InternalDate" | "SizeEstimate" | "DateHeader" | "FromAddr" | "ToAddrs" | "CcAddrs" | "InReplyTo" | "MsgReferences" | "Subject" | "Snippet" | "Payload" | "Headers";
+
+/**  Machine-readable database constraint kind, mirrors `sqlx::error::ErrorKind`. */
+export type SqlxDbErrorKind = "UniqueViolation" | "ForeignKeyViolation" | "NotNullViolation" | "CheckViolation" | "Other";
+
+/**
+ *  Typed wrapper around `sqlx::Error` with machine-readable variants.
+ *  No string fields — use the error `Display` for human messages.
+ */
+export type SqlxError = "RowNotFound" | 
+/**  Database-level error; `kind` encodes the constraint violation category. */
+({ Database: {
+	kind: SqlxDbErrorKind,
+} }) & { ColumnIndexOutOfBounds?: never } | ({ ColumnIndexOutOfBounds: {
+	index: number,
+	len: number,
+} }) & { Database?: never } | "PoolTimedOut" | "PoolClosed" | "WorkerCrashed" | "Other";
 
 /* Tauri Specta runtime */
 async function typedError<T, E>(result: Promise<T>): Promise<{ status: "ok"; data: T } | { status: "error"; error: E }> {

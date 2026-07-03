@@ -267,9 +267,10 @@ impl Inner {
         info!("received {res:?}");
 
         let new_access_token = res.access_token().clone();
-        // TODO check if a new refresh token is returned
 
         token.access_token = new_access_token.into_secret();
+        token.expires_on =
+            SystemTime::now() + res.expires_in().unwrap_or(Duration::from_secs(3600));
         Ok(())
     }
 }

@@ -1,5 +1,4 @@
 import { Separator } from "@/components/ui/separator";
-import { useAuthStore } from "@/lib/AuthStore";
 
 import React, { useEffect } from "react";
 import googleSigninLight from "@/assets/google_signin_light.svg";
@@ -50,7 +49,7 @@ const AccountSettings: React.FC = () => {
       <span className="text-2xl font-heading">Account</span>
       <div className="flex ">
         <div
-          id="user-avatar"
+         id="user-avatar"
           className="h-16 w-16 rounded-full bg-muted
                  text-muted-foreground flex items-center justify-center
                  outline outline-border text-2xl"

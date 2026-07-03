@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use google_gmail1::{
     api::Label,
@@ -15,23 +15,35 @@ use tokio::sync::Mutex;
 
 use crate::{
     email::{
-        gmail::auth::Auth,
+        gmail::{auth::Auth, GmailError},
         repo::{add_label, AddLabelStatus},
     },
-    DbPool,
+    AppError, DbPool,
 };
 
 pub mod gmail;
 mod repo;
 
+#[derive(Clone, Debug)]
 pub struct EmailManager {
     // Maps account_id to (email, Auth)
     // to use: construct a gmail client with the http_client
     // TODO: add struct, extract Auth into enum, maybe RwLock
-    account_map: Mutex<HashMap<i64, (String, gmail::auth::Auth)>>,
+    account_map: Arc<Mutex<HashMap<i64, (String, gmail::auth::Auth)>>>,
     /// Hyper Client, cheap to Clone
     http_client: Client<HttpsConnector<HttpConnector>>,
     oauth_reqwest_client: reqwest::Client,
+}
+
+impl EmailManager {
+    pub async fn get_gmail_client(
+        &self,
+        account_id: i64,
+    ) -> Result<Gmail<HttpsConnector<HttpConnector>>, crate::AppError> {
+        let lock = self.account_map.lock().await;
+        let (_, auth) = lock.get(&account_id).ok_or(AppError::AccountNotFound)?;
+        Ok(Gmail::new(self.http_client.clone(), auth.clone()))
+    }
 }
 
 /// Run on setup
@@ -80,15 +92,19 @@ pub fn setup(app: &mut App, db: &DbPool) -> Result<(), Box<dyn std::error::Error
     // populate the email account map from the db
     for (email, account_id, auth_client) in auth_clients {
         match auth_client {
-            Ok(client) => { email_account_map.insert(account_id, (email, client)); }
-            Err(e) => error!("skipping account {account_id} ({email}): failed to load credentials: {e:?}"),
+            Ok(client) => {
+                email_account_map.insert(account_id, (email, client));
+            }
+            Err(e) => {
+                error!("skipping account {account_id} ({email}): failed to load credentials: {e:?}")
+            }
         }
     }
 
     info!("{email_account_map:?}");
 
     app.manage(EmailManager {
-        account_map: Mutex::new(email_account_map),
+        account_map: Arc::new(Mutex::new(email_account_map)),
         http_client: gmail_http_client,
         oauth_reqwest_client: oauth_http_client.clone(),
     });
