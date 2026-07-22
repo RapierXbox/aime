@@ -1,11 +1,14 @@
+#![allow(unused)]
+
 use std::{fs, time::Duration};
 
-use log::{debug, error};
+use ecow::EcoString;
+use log::{debug, error, warn};
 use serde::Serialize;
 use specta::Type;
 
 use sqlx::{sqlite::SqliteConnectOptions, ConnectOptions};
-use tauri::{async_runtime, App, Manager};
+use tauri::{async_runtime, ipc::Channel, App, Manager};
 use tauri_specta::{collect_commands, Builder};
 use thiserror::Error;
 
@@ -90,4 +93,48 @@ fn setup(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     app.manage(pool);
 
     Ok(())
+}
+
+// TODO: maybe create a more sophisticated progress tracker
+// where you can create sections and Updates show inside those sections so progress doesnt jump around
+
+#[derive(specta::Type, Debug, Clone, Serialize)]
+pub enum Progress {
+    Update {
+        #[specta(type = specta_typescript::Number)]
+        completed: u64,
+        #[specta(type = specta_typescript::Number)]
+        out_of: Option<u64>,
+    },
+    Message(IpcEcoString),
+}
+
+pub trait ProgressReporter {
+    fn report(&self, update: Progress);
+    fn report_message(&self, message: EcoString);
+}
+
+impl ProgressReporter for Channel<Progress> {
+    fn report(&self, update: Progress) {
+        self.send(update)
+            .inspect_err(|e| warn!("failed to report progress: {e:?}"))
+            .ok();
+    }
+
+    fn report_message(&self, message: EcoString) {
+        self.send(Progress::Message(IpcEcoString(message)))
+            .inspect_err(|e| warn!("failed to report message: {e:?}"))
+            .ok();
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(transparent)]
+pub struct IpcEcoString(pub EcoString);
+
+impl Type for IpcEcoString {
+    // just a string over the wire
+    fn definition(types: &mut specta::Types) -> specta::datatype::DataType {
+        String::definition(types)
+    }
 }

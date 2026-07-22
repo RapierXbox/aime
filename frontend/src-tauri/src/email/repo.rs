@@ -60,7 +60,7 @@ where
                         account_name: it.account_name.clone(),
                         config: serde_json::from_str(&it.account_config).map_err(|e| {
                             error!("while parsing account config: {e:?}");
-                            crate::AppError::SerdeJson
+                            crate::AppError::from(e)
                         })?,
                     })
                 })

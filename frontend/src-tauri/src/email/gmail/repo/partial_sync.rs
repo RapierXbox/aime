@@ -5,15 +5,26 @@ use log::{error, info};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use sqlx::{Connection, Executor, Sqlite, Transaction};
+use tauri::ipc::Channel;
 
-use crate::AppError;
+use crate::{AppError, Progress, ProgressReporter};
 
 impl super::GmailRepo {
-    pub async fn apply_history(&self, history: Vec<History>) -> Result<(), AppError> {
+    pub async fn apply_history(
+        &self,
+        history: Vec<History>,
+        updates: Channel<Progress>,
+    ) -> Result<(), AppError> {
         // TODO: error handling: this probably shouldnt propagate errors
         let mut tx = self.db_pool.begin().await?;
+        let len = history.len() as u64;
 
-        for h in history {
+        for (i, h) in history.into_iter().enumerate() {
+            updates.report(Progress::Update {
+                completed: i as u64 + 1,
+                out_of: Some(len),
+            });
+
             match h {
                 History {
                     labels_added: Some(added),

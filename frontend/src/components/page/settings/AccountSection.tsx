@@ -5,7 +5,14 @@ import googleSigninLight from "@/assets/google_signin_light.svg";
 import googleSigninDark from "@/assets/google_signin_dark.svg";
 import { Button } from "@/components/ui/button";
 import { DevOnly } from "@/components/dev/DevOnly";
-import { commands, type AppError, type ListEmailEntry } from "@/bindings";
+import {
+  commands,
+  type AppError,
+  type ListEmailEntry,
+  type Progress,
+} from "@/bindings";
+import { Channel } from "@tauri-apps/api/core";
+import { Progress as ProgressBar } from "radix-ui";
 
 /*
 /// The user's email address.
@@ -33,13 +40,26 @@ const AccountSettings: React.FC = () => {
 
   const [syncBtnText, setSyncBtnText] = React.useState<string>("Sync");
 
-  const syncBtnOnClick = (id: string) => {
+  const [progress, setProgress] = React.useState<number | null>(null);
 
-    const req = commands.emailSync(id);
+  const chan = new Channel<Progress>();
+  chan.onmessage = (p) => {
+    console.log(p);
+    if (p.Update) {
+      setProgress(p.Update.completed / p.Update.out_of);
+    }
+  };
+
+  const fullSyncBtnOnclick = (id: string) => {
+    commands.devEmailFullSync(id, chan);
+  };
+
+  const syncBtnOnClick = (id: string) => {
+    const req = commands.emailSync(id, chan);
 
     setSyncBtnText("⏳");
     req.then((res) => {
-      if (res.status === 'ok') {
+      if (res.status === "ok") {
         setSyncBtnText("☑️");
       } else {
         setSyncBtnText("❌");
@@ -64,10 +84,22 @@ const AccountSettings: React.FC = () => {
 
   return (
     <section className="flex flex-col gap-2 w-full">
+      {progress !== null && (
+        <ProgressBar.Root
+          value={progress * 100}
+          className="w-full h-1 bg-muted overflow-hidden"
+        >
+          <ProgressBar.Indicator
+            className="h-full bg-primary transition-transform"
+            style={{ transform: `translateX(-${100 - progress * 100}%)` }}
+          />
+        </ProgressBar.Root>
+      )}
+
       <span className="text-2xl font-heading">Account</span>
       <div className="flex ">
         <div
-         id="user-avatar"
+          id="user-avatar"
           className="h-16 w-16 rounded-full bg-muted
                  text-muted-foreground flex items-center justify-center
                  outline outline-border text-2xl"
@@ -116,14 +148,12 @@ const AccountSettings: React.FC = () => {
               {acc.name}
               <DevOnly>
                 <Button
-                  onClick={() => commands.devEmailFullSync(acc.id)}
+                  onClick={() => fullSyncBtnOnclick(acc.id)}
                   variant="destructive"
                 >
                   Full Sync
                 </Button>
-                <Button
-                  onClick={() => syncBtnOnClick(acc.id)}
-                >
+                <Button onClick={() => syncBtnOnClick(acc.id)}>
                   {syncBtnText}
                 </Button>
               </DevOnly>

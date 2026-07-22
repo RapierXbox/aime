@@ -78,6 +78,113 @@ impl From<sqlx::Error> for SqlxError {
     }
 }
 
+/// Machine-readable subset of `std::io::ErrorKind`; rest collapse to `Other`.
+#[derive(Error, Debug, Serialize, Type)]
+pub enum IoError {
+    #[error("not found")]
+    NotFound,
+    #[error("permission denied")]
+    PermissionDenied,
+    #[error("already exists")]
+    AlreadyExists,
+    #[error("connection failed")]
+    Connection,
+    #[error("timed out")]
+    TimedOut,
+    #[error("unexpected eof")]
+    UnexpectedEof,
+    #[error("other")]
+    Other,
+}
+
+impl From<std::io::Error> for IoError {
+    fn from(e: std::io::Error) -> Self {
+        use std::io::ErrorKind as K;
+        match e.kind() {
+            K::NotFound => Self::NotFound,
+            K::PermissionDenied => Self::PermissionDenied,
+            K::AlreadyExists => Self::AlreadyExists,
+            K::ConnectionRefused | K::ConnectionReset | K::ConnectionAborted | K::BrokenPipe => {
+                Self::Connection
+            }
+            K::TimedOut => Self::TimedOut,
+            K::UnexpectedEof => Self::UnexpectedEof,
+            _ => Self::Other,
+        }
+    }
+}
+
+/// Mirrors `serde_json::error::Category` — the meaningful failure kinds.
+#[derive(Error, Debug, Serialize, Type)]
+pub enum SerdeError {
+    #[error("io")]
+    Io,
+    #[error("syntax")]
+    Syntax,
+    #[error("data")]
+    Data,
+    #[error("eof")]
+    Eof,
+}
+
+impl From<serde_json::Error> for SerdeError {
+    fn from(e: serde_json::Error) -> Self {
+        use serde_json::error::Category as C;
+        match e.classify() {
+            C::Io => Self::Io,
+            C::Syntax => Self::Syntax,
+            C::Data => Self::Data,
+            C::Eof => Self::Eof,
+        }
+    }
+}
+
+/// Tauri runtime errors. `Io`/`Json` are peeled off to the top-level `AppError`
+/// variants (same failure, one canonical code); everything else → `Other`.
+/// `tauri::Error` is `#[non_exhaustive]` and huge — only the codes we act on.
+#[derive(Error, Debug, Serialize, Type)]
+pub enum TauriError {
+    #[error("invalid command args")]
+    InvalidArgs,
+    #[error("setup hook failed")]
+    Setup,
+    #[error("other")]
+    Other,
+}
+
+impl From<tauri::Error> for TauriError {
+    fn from(e: tauri::Error) -> Self {
+        match e {
+            tauri::Error::InvalidArgs(..) => Self::InvalidArgs,
+            tauri::Error::Setup(..) => Self::Setup,
+            _ => Self::Other,
+        }
+    }
+}
+
+impl From<std::io::Error> for AppError {
+    fn from(e: std::io::Error) -> Self {
+        IoError::from(e).into()
+    }
+}
+
+impl From<serde_json::Error> for AppError {
+    fn from(e: serde_json::Error) -> Self {
+        SerdeError::from(e).into()
+    }
+}
+
+impl From<tauri::Error> for AppError {
+    fn from(e: tauri::Error) -> Self {
+        // io/json aren't tauri-specific: route them to their canonical variant.
+        match e {
+            tauri::Error::Io(io) => IoError::from(io).into(),
+            tauri::Error::Json(j) => SerdeError::from(j).into(),
+            other => TauriError::from(other).into(),
+        }
+    }
+}
+
 #[derive(Error, Debug, Serialize, Type)]
 pub enum AppError {
     #[error("Missing database File")]
@@ -95,8 +202,8 @@ pub enum AppError {
     #[error("sqlx error")]
     Sqlx(#[from] SqlxError),
 
-    #[error("IO error")]
-    IOError,
+    #[error("IO error: {0}")]
+    Io(#[from] IoError),
 
     #[error("Url parse error")]
     UrlParseError,
@@ -113,8 +220,11 @@ pub enum AppError {
     #[error("Gmail did not return labels")]
     GmailMissingLabels,
 
-    #[error("SerdeJson error")]
-    SerdeJson,
+    #[error("SerdeJson error: {0}")]
+    Serde(#[from] SerdeError),
+
+    #[error("Tauri error: {0}")]
+    Tauri(#[from] TauriError),
 
     #[error("Account not found for id")]
     AccountNotFound,

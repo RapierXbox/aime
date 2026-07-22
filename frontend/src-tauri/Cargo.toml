@@ -43,3 +43,4 @@ specta-typescript = { version = "0.0.12", features = ["serde"] }
 tokio-stream = "0.1.18"
 futures = "0.3.32"
 base64 = "0.22.1"
+ecow = { version = "0.3.0", features = ["serde"] }

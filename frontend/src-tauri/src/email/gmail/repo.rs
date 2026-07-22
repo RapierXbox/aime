@@ -8,6 +8,7 @@ use log::{error, info};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use sqlx::{Connection, Executor, Sqlite, Transaction};
+use tauri::ipc::Channel;
 
 use crate::{
     email::{
@@ -17,7 +18,7 @@ use crate::{
             MessageSkeleton, MissingField,
         },
     },
-    AppError, DbPool,
+    AppError, DbPool, Progress,
 };
 
 #[derive(Debug)]
@@ -102,6 +103,34 @@ impl GmailRepo {
         tx.commit().await?;
 
         Ok(())
+    }
+
+    pub async fn count_all_messages(&self) -> Result<u64, AppError> {
+        sqlx::query_scalar!(
+            r#"SELECT COUNT(*) as "count!: i64" FROM messages WHERE account_id = ?"#,
+            self.account_id
+        )
+        .fetch_one(&self.db_pool)
+        .await
+        .map(|c| c as u64)
+        .map_err(|e| {
+            error!("failed to count messages: {e:?}");
+            AppError::Sqlx(e.into())
+        })
+    }
+
+    pub async fn count_message_skeletons(&self) -> Result<u64, AppError> {
+        sqlx::query_scalar!(
+            r#"SELECT COUNT(*) as "count!: i64" FROM messages WHERE internal_date IS NULL AND account_id = ?"#,
+            self.account_id
+        )
+        .fetch_one(&self.db_pool)
+        .await
+        .map(|c| c as u64)
+        .map_err(|e| {
+            error!("failed to count message skeletons: {e:?}");
+            AppError::Sqlx(e.into())
+        })
     }
 
     pub fn stream_all_messages(
@@ -255,7 +284,7 @@ impl GmailRepo {
         .and_then(|it| {
             serde_json::from_str(&it.account_config).map_err(|e| {
                 error!("failed to parse account config: {e:?}");
-                AppError::SerdeJson
+                AppError::from(e)
             })
         })
     }
@@ -263,7 +292,7 @@ impl GmailRepo {
     pub async fn set_account_config(&self, config: &AccountConfig) -> Result<(), AppError> {
         let str = serde_json::to_string(config).map_err(|e| {
             error!("failed to parse account config: {e:?}");
-            AppError::SerdeJson
+            AppError::from(e)
         })?;
 
         sqlx::query!(
@@ -293,7 +322,7 @@ impl GmailRepo {
 
         let config = serde_json::from_str::<AccountConfig>(&acc.account_config).map_err(|e| {
             error!("failed to parse account config: {e:?}");
-            AppError::SerdeJson
+            AppError::from(e)
         })?;
 
         let new_config = match config {
@@ -305,7 +334,7 @@ impl GmailRepo {
 
         let new_config_json = serde_json::to_string(&new_config).map_err(|e| {
             error!("failed to serialize account config: {e:?}");
-            AppError::SerdeJson
+            AppError::from(e)
         })?;
 
         sqlx::query!(

@@ -10,7 +10,7 @@ use google_gmail1::{
 use log::{error, info};
 use oauth2::reqwest;
 use serde::{Deserialize, Serialize};
-use tauri::{async_runtime, App, Manager, State};
+use tauri::{async_runtime, ipc::Channel, window::ProgressBarState, App, Manager, State};
 use tokio::sync::Mutex;
 
 use crate::{
@@ -18,7 +18,7 @@ use crate::{
         self,
         gmail::{auth::Auth, GmailApiClient},
     },
-    AppError, DbPool,
+    AppError, DbPool, Progress,
 };
 
 pub mod gmail;
@@ -145,6 +145,7 @@ pub async fn email_list_accounts(
 pub async fn dev_email_full_sync(
     account_id: String,
     email_mng: State<'_, EmailManager>,
+    update_channel: Channel<Progress>,
     db_pool: State<'_, DbPool>,
 ) -> Result<(), crate::AppError> {
     info!("do_onboard_sync for {account_id}");
@@ -158,15 +159,16 @@ pub async fn dev_email_full_sync(
         .get_client(account_id)
         .await
         .ok_or(AppError::AccountNotFound)?;
-    client.full_sync().await
+
+    client.full_sync(update_channel).await
 }
 
 #[tauri::command]
 #[specta::specta]
 pub async fn email_sync(
     account_id: String,
+    update_channel: Channel<Progress>,
     email_mng: State<'_, EmailManager>,
-    db_pool: State<'_, DbPool>,
 ) -> Result<(), crate::AppError> {
     let account_id = account_id
         .parse::<i64>()
@@ -178,7 +180,7 @@ pub async fn email_sync(
         .await
         .ok_or(AppError::AccountNotFound)?;
 
-    let res = client.sync().await;
+    let res = client.sync(update_channel).await;
     info!("email_sync res = {res:?}");
     res
 }

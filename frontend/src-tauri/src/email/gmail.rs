@@ -16,12 +16,13 @@ use google_gmail1::{
 };
 use log::{error, info};
 use log::{trace, warn};
+use tauri::ipc::Channel;
 use tauri::State;
 use tokio::{fs::File, io::AsyncWriteExt, stream};
 
-use crate::email;
 use crate::email::gmail::repo::GmailRepo;
 use crate::email::repo::{Label, MessageSkeleton};
+use crate::{email, Progress, ProgressReporter};
 use crate::{
     email::{
         repo::{
@@ -83,8 +84,19 @@ impl GmailClient {
     /// follows [https://developers.google.com/workspace/gmail/api/guides/sync]
     ///
     /// Either performs a partial sync, or if not possible, a full sync.
-    pub async fn sync(&self) -> Result<(), AppError> {
+    pub async fn sync(&self, update_channel: Channel<crate::Progress>) -> Result<(), AppError> {
+        update_channel.report(Progress::Update {
+            completed: 1,
+            out_of: Some(3),
+        });
+
         self.sync_labels().await?;
+
+        update_channel.report(Progress::Update {
+            completed: 1,
+            out_of: Some(3),
+        });
+
         info!("synced labels");
 
         let AccountConfig::Gmail { history_id, .. } = self.repo.get_account_config().await?;
@@ -93,8 +105,11 @@ impl GmailClient {
         match history_id {
             HistoryID::LastSynced(to) => {
                 info!("performing partial sync");
+
                 let start_history_id = to.parse().map_err(|_| AppError::ParseAccountID)?;
-                let res = self.partial_sync(start_history_id).await;
+                let res = self
+                    .partial_sync(start_history_id, update_channel.clone())
+                    .await;
 
                 match res {
                     Ok(_) => {
@@ -105,18 +120,22 @@ impl GmailClient {
                     Err(e) => {
                         // if the partial sync fails, fall back to full sync
                         info!("partial sync failed: {e:?}, trying full sync");
-                        self.full_sync().await
+                        self.full_sync(update_channel.clone()).await
                     }
                 }
             }
             HistoryID::KnownStale => {
                 info!("history_id is known stale, performing full sync");
-                self.full_sync().await
+                self.full_sync(update_channel.clone()).await
             }
         }
     }
 
-    async fn partial_sync(&self, start_history_id: u64) -> Result<(), crate::AppError> {
+    async fn partial_sync(
+        &self,
+        start_history_id: u64,
+        updates: Channel<Progress>,
+    ) -> Result<(), crate::AppError> {
         let res = self
             .client
             .users()
@@ -132,7 +151,7 @@ impl GmailClient {
                     if res.status() == hyper::StatusCode::NOT_FOUND =>
                 {
                     warn!("got a 404 {res:?} on users.history.list. Performing full sync");
-                    self.full_sync().await?;
+                    self.full_sync(updates.clone()).await?;
                     todo!()
                 }
                 _ => return Err(e.into()),
@@ -147,6 +166,11 @@ impl GmailClient {
                     ..
                 },
             )) => {
+                updates.report(Progress::Update {
+                    completed: 3,
+                    out_of: Some(3),
+                });
+
                 info!("got empty history list, completing!");
                 self.repo
                     .set_account_config_sync_cursor(history_id_new.to_string())
@@ -154,6 +178,7 @@ impl GmailClient {
                 return Ok(());
             }
 
+            // got some history, apply it
             Ok((
                 _,
                 ListHistoryResponse {
@@ -163,56 +188,14 @@ impl GmailClient {
                     ..
                 },
             )) => {
-                // TODO: crash edge case, when the app crashes between syncing pages, it applies the edits already done twice
-                // apply the first history part
-                self.repo.apply_history(history).await?;
-
-                let mut running_page_token = next_page_token;
-                while let Some(ref token) = running_page_token {
-                    info!("incr sync res_history_id={history_id_new}, target={start_history_id} page 1 done");
-
-                    let (_, res) = self
-                        .client
-                        .users()
-                        .history_list("me")
-                        .page_token(token)
-                        // use the history_id from the request response
-                        .start_history_id(start_history_id)
-                        .doit()
-                        .await?;
-
-                    match res {
-                        ListHistoryResponse {
-                            history: Some(paged_history),
-                            next_page_token,
-                            ..
-                        } => {
-                            self.repo.apply_history(paged_history).await?;
-                            running_page_token = next_page_token;
-                        }
-
-                        ListHistoryResponse {
-                            history: None,
-                            history_id: Some(history_id_finished),
-                            ..
-                        } => {
-                            self.repo
-                                .set_account_config_sync_cursor(history_id_finished.to_string())
-                                .await?;
-                            return Ok(());
-                        }
-
-                        _ => return Err(crate::AppError::GmailResponseIncomplete),
-                    }
-                }
-
-                info!("finished partial sync to {history_id_new}");
-
-                self.repo
-                    .set_account_config_sync_cursor(history_id_new.to_string())
-                    .await?;
-
-                return Ok(());
+                self.apply_partial_sync_history(
+                    start_history_id,
+                    updates,
+                    history,
+                    history_id_new,
+                    next_page_token,
+                )
+                .await
             }
 
             Ok((d, r)) => {
@@ -222,14 +205,89 @@ impl GmailClient {
         }
     }
 
+    async fn apply_partial_sync_history(
+        &self,
+        start_history_id: u64,
+        updates: Channel<Progress>,
+        history: Vec<History>,
+        history_id_new: u64,
+        next_page_token: Option<String>,
+    ) -> Result<(), AppError> {
+        // update the history we already have
+        self.repo.apply_history(history, updates.clone()).await?;
+        // next up, check if there are more pages to fetch
+
+        let mut running_page_token = next_page_token;
+        while let Some(ref token) = running_page_token {
+            info!(
+                "incr sync res_history_id={history_id_new}, target={start_history_id} page 1 done"
+            );
+
+            let (_, res) = self
+                .client
+                .users()
+                .history_list("me")
+                .page_token(token)
+                // use the history_id from the request response
+                .start_history_id(start_history_id)
+                .doit()
+                .await?;
+
+            match res {
+                ListHistoryResponse {
+                    history: Some(paged_history),
+                    next_page_token,
+                    ..
+                } => {
+                    self.repo
+                        .apply_history(paged_history, updates.clone())
+                        .await?;
+                    running_page_token = next_page_token;
+                }
+
+                ListHistoryResponse {
+                    history: None,
+                    history_id: Some(history_id_finished),
+                    ..
+                } => {
+                    let total = self.repo.count_message_skeletons().await?;
+                    self.backfill_messages(
+                        self.repo.stream_message_skeletons(),
+                        total,
+                        updates.clone(),
+                    )
+                    .await?;
+
+                    self.repo
+                        .set_account_config_sync_cursor(history_id_finished.to_string())
+                        .await?;
+
+                    return Ok(());
+                }
+
+                _ => return Err(crate::AppError::GmailResponseIncomplete),
+            }
+        }
+
+        info!("finished partial sync to {history_id_new}");
+        self.repo
+            .set_account_config_sync_cursor(history_id_new.to_string())
+            .await?;
+        return Ok(());
+        Ok(())
+    }
+
     // https://developers.google.com/workspace/gmail/api/guides/sync#full-sync
     // todo: return u64
     // TODO: this misses deleted messages since the fetch_and_store_skeletons doesnt delete records that werent touched
-    pub async fn full_sync(&self) -> Result<(), crate::AppError> {
+    pub async fn full_sync(&self, updates: Channel<Progress>) -> Result<(), crate::AppError> {
         // TODO: include spam/trash? decide: lazy sync inboxes?
 
-        self.fetch_and_store_message_skeletons().await?;
-        self.backfill_messages(self.repo.stream_all_messages())
+        self.fetch_and_store_message_skeletons(updates.clone())
+            .await?;
+
+        let total = self.repo.count_all_messages().await?;
+        self.backfill_messages(self.repo.stream_all_messages(), total, updates.clone())
             .await?;
 
         info!(
@@ -240,9 +298,7 @@ impl GmailClient {
         let latest_history_id = self.repo.get_latest_sync_cursor().await?;
         let config = self.repo.get_account_config().await?;
 
-        let AccountConfig::Gmail { scopes, .. } = config else {
-            unreachable!()
-        };
+        let AccountConfig::Gmail { scopes, .. } = config;
 
         let new_config = AccountConfig::Gmail {
             history_id: HistoryID::LastSynced(latest_history_id),
@@ -324,19 +380,31 @@ impl GmailClient {
     async fn backfill_messages(
         &self,
         stream: impl futures::Stream<Item = Result<MessageSkeleton, AppError>>,
+        total: u64,
+        updates: Channel<Progress>,
     ) -> Result<(), AppError> {
         info!(
             "starting parallel backfill for account_id={}",
             self.account_id
         );
 
+        let completed = std::sync::atomic::AtomicU64::new(0);
+
         // fetch the messages in parallel and load them into the db
         stream
             .map(|it| async { self.fetch_and_store_skeleton(it?).await })
             .buffer_unordered(Self::N_FETCH_WORKERS)
-            .for_each(|res| async {
-                if let Err(e) = res {
-                    error!("failed to load message: {e:?}");
+            .for_each(|res| {
+                let n = completed.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                updates.report(Progress::Update {
+                    completed: n,
+                    out_of: Some(total),
+                });
+
+                async move {
+                    if let Err(e) = res {
+                        error!("failed to load message: {e:?}");
+                    }
                 }
             })
             .await;
@@ -365,7 +433,10 @@ impl GmailClient {
     }
 
     /// Synchronize and store the message skeletons from users.messages.list
-    async fn fetch_and_store_message_skeletons(&self) -> Result<(), AppError> {
+    async fn fetch_and_store_message_skeletons(
+        &self,
+        progress: Channel<Progress>,
+    ) -> Result<(), AppError> {
         // https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/list
         // list the first 500 messages
         let (b, res) = self
@@ -389,7 +460,14 @@ impl GmailClient {
 
         let mut next_page_token = res.next_page_token;
         // until no new page token is returned,
+        let mut id = 1;
         while let Some(token) = next_page_token {
+            id += 1;
+            progress.report(Progress::Update {
+                completed: id,
+                out_of: Some(10.max(id + 2)),
+            });
+
             info!("fetching messages page token={token}");
 
             // fetch the next 500 results
