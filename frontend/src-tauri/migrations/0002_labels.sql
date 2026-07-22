@@ -1,8 +1,9 @@
 
 -- limited fields because gmail's users.labels.list doesn't return all fields
 CREATE TABLE labels (
+    account_id INTEGER NOT NULL,
     -- id, name, messageListVisibility, labelListVisibility, and type
-    id TEXT PRIMARY KEY,
+    id TEXT,
     name TEXT NOT NULL,
 
     -- wether the label is shown in the message list
@@ -15,5 +16,8 @@ CREATE TABLE labels (
 
     type TEXT
         CHECK (type IN ('system', 'user'))
-        NOT NULL
+        NOT NULL,
+
+    PRIMARY KEY (account_id, id),
+    FOREIGN KEY (account_id) REFERENCES email_accounts(id) ON DELETE CASCADE
 );

@@ -15,7 +15,8 @@ use tokio::sync::Mutex;
 
 use crate::{
     email::{
-        gmail::{auth::Auth, GmailError},
+        self,
+        gmail::{auth::Auth, GmailApiClient, GmailClient, GmailError},
         repo::{add_label, AddLabelStatus},
     },
     AppError, DbPool,
@@ -26,23 +27,20 @@ mod repo;
 
 #[derive(Clone, Debug)]
 pub struct EmailManager {
-    // Maps account_id to (email, Auth)
+    // Maps account_id to (email_address, Auth)
     // to use: construct a gmail client with the http_client
-    // TODO: add struct, extract Auth into enum, maybe RwLock
-    account_map: Arc<Mutex<HashMap<i64, (String, gmail::auth::Auth)>>>,
+    // TODO: wrap in provider-agnostic enum, maybe RwLock
+    account_map: Arc<Mutex<HashMap<i64, Arc<email::gmail::GmailClient>>>>,
     /// Hyper Client, cheap to Clone
     http_client: Client<HttpsConnector<HttpConnector>>,
+    /// only used for the auth requests
     oauth_reqwest_client: reqwest::Client,
 }
 
 impl EmailManager {
-    pub async fn get_gmail_client(
-        &self,
-        account_id: i64,
-    ) -> Result<Gmail<HttpsConnector<HttpConnector>>, crate::AppError> {
+    pub async fn get_client(&self, account_id: i64) -> Option<Arc<gmail::GmailClient>> {
         let lock = self.account_map.lock().await;
-        let (_, auth) = lock.get(&account_id).ok_or(AppError::AccountNotFound)?;
-        Ok(Gmail::new(self.http_client.clone(), auth.clone()))
+        lock.get(&account_id).cloned()
     }
 }
 
@@ -73,33 +71,36 @@ pub fn setup(app: &mut App, db: &DbPool) -> Result<(), Box<dyn std::error::Error
 
     let app_handle = app.handle();
     let accs = async_runtime::block_on(repo::get_accounts(&db))?;
+
+    // populate the email account map from the db
     let auth_clients = {
         let oauth_http_client = oauth_http_client.clone();
 
-        accs.into_iter().map(move |acc| {
-            let email = acc.email.clone();
-            let account_id = acc.id;
-            (
-                email,
-                account_id,
-                Auth::reinstantiate(&app_handle, acc.clone(), oauth_http_client.clone()),
-            )
-        })
+        accs.into_iter()
+            .map(move |acc| {
+                let email = acc.email.clone();
+                let account_id = acc.id;
+                (
+                    email,
+                    account_id,
+                    Auth::reinstantiate(&app_handle, acc.clone(), oauth_http_client.clone()),
+                )
+            })
+            .filter_map(|(email, account_id, auth_client)| match auth_client {
+                Ok(auth) => Some((
+                    account_id,
+                    Arc::new(gmail::GmailClient::new(
+                        account_id,
+                        db.clone(),
+                        email,
+                        GmailApiClient::new(gmail_http_client.clone(), auth),
+                    )),
+                )),
+                Err(_) => None,
+            })
     };
 
-    let mut email_account_map = HashMap::new();
-
-    // populate the email account map from the db
-    for (email, account_id, auth_client) in auth_clients {
-        match auth_client {
-            Ok(client) => {
-                email_account_map.insert(account_id, (email, client));
-            }
-            Err(e) => {
-                error!("skipping account {account_id} ({email}): failed to load credentials: {e:?}")
-            }
-        }
-    }
+    let mut email_account_map = HashMap::from_iter(auth_clients);
 
     info!("{email_account_map:?}");
 
@@ -128,9 +129,9 @@ pub async fn email_list_accounts(
     let lock = email.account_map.lock().await;
     Ok(lock
         .iter()
-        .map(|(&id, (name, _))| ListEmailEntry {
+        .map(|(&id, it)| ListEmailEntry {
             id: id.to_string(),
-            name: name.clone(),
+            name: it.email_addr().to_owned(),
         })
         .collect())
 }
@@ -153,5 +154,10 @@ pub async fn dev_email_full_sync(
         .parse::<i64>()
         .map_err(|_| crate::AppError::ParseAccountID)?;
 
-    gmail::full_sync(account_id, email_mng, db_pool).await
+    let client = email_mng
+        .inner()
+        .get_client(account_id)
+        .await
+        .ok_or(AppError::AccountNotFound)?;
+    client.full_sync().await
 }

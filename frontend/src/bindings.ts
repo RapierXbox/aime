@@ -25,14 +25,14 @@ export type GmailApiError = "HttpError" | ({ UploadSizeLimitExceeded: {
 	max_size: number | null,
 } }) & { Failure?: never } | "BadRequest" | "MissingAPIKey" | "MissingToken" | "Cancelled" | "FieldClash" | "JsonDecodeError" | ({ Failure: number }) & { UploadSizeLimitExceeded?: never } | "Io";
 
-export type GmailError = "AuthUrlParse" | "TokenUrlParse" | "RedirectUrlParse" | "OauthRedirect" | "OauthHttpResp" | "OauthTcpListen" | "MessageNotSkeleton" | "UnsupportedMimeVer" | { MissingField: MissingField };
+export type GmailError = "AuthUrlParse" | "TokenUrlParse" | "RedirectUrlParse" | "OauthRedirect" | "OauthHttpResp" | "OauthTcpListen" | "MessageNotSkeleton" | "UnsupportedMimeVer" | "UnsupportedMimeType" | "MessagePartNotLeaf" | { MissingField: MissingField };
 
 export type ListEmailEntry = {
 	id: string,
 	name: string,
 };
 
-export type MissingField = "ThreadId" | "SyncCursor" | "LabelIds" | "InternalDate" | "SizeEstimate" | "DateHeader" | "FromAddr" | "ToAddrs" | "CcAddrs" | "InReplyTo" | "MsgReferences" | "Subject" | "Snippet" | "Payload" | "Headers";
+export type MissingField = "ThreadId" | "SyncCursor" | "LabelIds" | "InternalDate" | "SizeEstimate" | "DateHeader" | "FromAddr" | "ToAddrs" | "CcAddrs" | "InReplyTo" | "MsgReferences" | "Subject" | "Snippet" | "MsgId" | "Payload" | "Headers" | "InLabel";
 
 /**  Machine-readable database constraint kind, mirrors `sqlx::error::ErrorKind`. */
 export type SqlxDbErrorKind = "UniqueViolation" | "ForeignKeyViolation" | "NotNullViolation" | "CheckViolation" | "Other";

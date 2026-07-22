@@ -30,7 +30,7 @@ use crate::{
         gmail,
         repo::{AccountConfig, EmailAccount, HistoryID},
     },
-    KEYRING_SERVICE,
+    secret_store,
 };
 
 static CLIENT_SECRET_STR: &str = include_str!("../../../google_client_secret.json");
@@ -119,20 +119,12 @@ impl TempAuth {
         app: &tauri::AppHandle,
         email_addr: &str,
     ) -> Result<(), crate::AppError> {
-        app.keyring()
-            .set_password(
-                KEYRING_SERVICE,
-                &fmt_keyring_usr(email_addr),
-                self.token.refresh_token.secret(),
-            )
-            .inspect_err(|e| info!("could not save {:?} to keyring: {:?}", email_addr, e))
-            .map_err(|_| crate::AppError::KeyringSaveError)
+        secret_store::set_password(
+            app,
+            &secret_store::fmt_gmail_keyring_user(email_addr),
+            self.token.refresh_token.secret(),
+        )
     }
-}
-
-/// Get the keyring key/username for a given email address. Should store the refresh token.
-fn fmt_keyring_usr(email_addr: &str) -> String {
-    format!("gmail:refresh:{}", email_addr)
 }
 
 #[derive(Clone)]
@@ -188,9 +180,9 @@ impl Auth {
         http_client: reqwest::Client,
     ) -> Result<Self, crate::AppError> {
         // load refresh token from keyring
-        let res = app
-            .keyring()
-            .get_password(KEYRING_SERVICE, &fmt_keyring_usr(&account.email));
+        let res =
+            secret_store::get_password(app, &secret_store::fmt_gmail_keyring_user(&account.email));
+
         let refresh_token = match res {
             Ok(Some(token)) => RefreshToken::new(token),
             Ok(None) | Err(_) => {

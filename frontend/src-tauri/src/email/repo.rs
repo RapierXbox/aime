@@ -1,9 +1,12 @@
-use std::marker::PhantomData;
+use std::{marker::PhantomData, process::Output};
 
+use futures::StreamExt;
 use log::{error, info};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use sqlx::{prelude::FromRow, Database, Executor, Sqlite};
+
+use crate::{email::gmail::GmailError, AppError, DbPool};
 
 // todo: use typestate and enum to model account types
 #[derive(Debug, Clone)]
@@ -15,6 +18,7 @@ pub struct EmailAccount {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[non_exhaustive]
 pub enum AccountConfig {
     // From google_gmail1::api::Profile
     Gmail {
@@ -29,8 +33,35 @@ pub enum AccountConfig {
 // a full sync needs to be performed
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum HistoryID {
-    LastSynced(u64),
+    LastSynced(String),
     KnownStale,
+}
+
+// Finishes a sync by updating the account config with the last synced history ID
+pub async fn update_account_config<'a, E>(
+    account_id: i64,
+    account_config: AccountConfig,
+    executor: &'a E,
+) -> Result<(), crate::AppError>
+where
+    &'a E: Executor<'a, Database = Sqlite>,
+{
+    let json_str =
+        serde_json::to_string(&account_config).map_err(|e| crate::AppError::SerdeJson)?;
+
+    sqlx::query!(
+        "
+        UPDATE email_accounts SET account_config = ? WHERE id = ?",
+        json_str,
+        account_id,
+    )
+    .execute(executor)
+    .await
+    .map_err(|e| {
+        error!("in update_account_config: db returned error {e:?}");
+        crate::AppError::Sqlx(e.into())
+    })?;
+    Ok(())
 }
 
 pub async fn get_accounts<'a, E>(executor: &'a E) -> Result<Vec<EmailAccount>, crate::AppError>
@@ -121,17 +152,18 @@ pub enum AddLabelStatus {
 
 pub async fn add_label<'a, E>(
     executor: &'a E,
+    account_id: i64,
     label: Label,
 ) -> Result<AddLabelStatus, crate::AppError>
 where
     &'a E: Executor<'a, Database = Sqlite>,
 {
     sqlx::query!(
-        "INSERT INTO labels (id, name, message_list_visibility, label_list_visibility, type)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT (id) DO NOTHING
-
+        "INSERT INTO labels (account_id, id, name, message_list_visibility, label_list_visibility, type)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT (account_id, id) DO NOTHING
         ",
+        account_id,
         label.id,
         label.name,
         label.message_list_visibility,
@@ -167,6 +199,283 @@ pub enum MissingField {
     Subject,
     Snippet,
 
+    MsgId,
     Payload,
     Headers,
+    InLabel,
+}
+
+#[derive(Debug)]
+// TODO: add a with_transaction(|tx| {...})
+pub struct GmailRepo {
+    db_pool: DbPool,
+    account_id: i64,
+}
+
+impl GmailRepo {
+    pub fn new(db_pool: DbPool, account_id: i64) -> GmailRepo {
+        Self {
+            db_pool,
+            account_id,
+        }
+    }
+
+    pub async fn add_label(&self, label: Label) -> Result<AddLabelStatus, crate::AppError> {
+        sqlx::query!(
+            "INSERT INTO labels (account_id, id, name, message_list_visibility, label_list_visibility, type)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT (account_id, id) DO NOTHING
+            ",
+            self.account_id,
+            label.id,
+            label.name,
+            label.message_list_visibility,
+            label.label_list_visibility,
+            label.type_
+        )
+        .execute(&self.db_pool)
+        .await
+        .map(|r| match r.rows_affected() {
+            0 => AddLabelStatus::AlreadyExists,
+            1 => AddLabelStatus::Inserted,
+            _ => unreachable!(),
+        })
+        .map_err(|e| {
+            error!("in add_label: db returned error {e:?}");
+            crate::AppError::Sqlx(e.into())
+        })
+    }
+
+    /// Insert message skeletons
+    pub async fn insert_skeleton_messages(
+        &self,
+        msgs: &[google_gmail1::api::Message],
+    ) -> Result<(), AppError> {
+        let mut tx = self.db_pool.begin().await?;
+
+        for msg in msgs {
+            match msg {
+                google_gmail1::api::Message {
+                    id: Some(msg_id),
+                    thread_id: Some(thread_id),
+                    ..
+                } => {
+                    let _ = sqlx::query!(
+                    // TODO update labels?
+                        "INSERT INTO messages (account_id, provider_msg_id, thread_id) VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
+                        self.account_id,
+                        msg_id,
+                        thread_id,
+                    )
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| {
+                        error!("failed to insert skeleton msg: {e:?}");
+                        AppError::Sqlx(e.into())
+                    })
+                    .map(|_| ());
+                }
+
+                _ => {
+                    error!("skipped inserting skeleton_msg into db: {msg:?}");
+                }
+            };
+        }
+
+        tx.commit().await?;
+
+        Ok(())
+    }
+
+    pub fn stream_message_skeletons(
+        &self,
+    ) -> impl futures::Stream<Item = Result<MessageSkeleton, AppError>> + use<'_> {
+        sqlx::query!(
+            "SELECT (provider_msg_id) FROM messages
+            WHERE internal_date IS NULL
+                AND account_id = ?
+            ",
+            self.account_id
+        )
+        .fetch(&self.db_pool)
+        .map(|it| {
+            Ok(MessageSkeleton {
+                provider_msg_id: it?.provider_msg_id,
+            })
+        })
+    }
+
+    pub async fn store_message(&self, msg: Message) -> Result<(), AppError> {
+        sqlx::query!(
+            "UPDATE messages SET
+            thread_id = COALESCE(?, thread_id),
+            sync_cursor = ?,
+            internal_date = ?,
+            size_estimate = ?,
+
+            date_header = ?,
+            from_addr = ?,
+            to_addrs = ?,
+            cc_addrs = ?,
+            in_reply_to = ?,
+            msg_references = ?,
+            subject = ?,
+            snippet = ?
+            WHERE account_id = ? AND provider_msg_id = ?",
+            msg.thread_id,
+            msg.sync_cursor,
+            msg.internal_date,
+            msg.size_estimate,
+            msg.date_header,
+            msg.from_addr,
+            msg.to_addrs,
+            msg.cc_addrs,
+            None::<String>,
+            None::<String>,
+            msg.subject,
+            msg.snippet,
+            self.account_id,
+            msg.provider_msg_id,
+        )
+        .execute(&self.db_pool)
+        .await
+        .map_err(|e| {
+            error!("failed to insert skeleton msg: {e:?}");
+            AppError::Sqlx(e.into())
+        })?;
+
+        for l in msg.label_ids {
+            // TODO: handle removed labels
+            sqlx::query!(
+                "INSERT INTO message_has_label 
+                (account_id, provider_msg_id, label_id)
+                VALUES (?, ?, ?) ON CONFLICT DO NOTHING
+                ",
+                self.account_id,
+                msg.provider_msg_id,
+                l
+            )
+            .execute(&self.db_pool)
+            .await
+            .map_err(|e| {
+                error!("failed to add label {l} to msg={:?}", msg.provider_msg_id);
+                AppError::Sqlx(e.into())
+            })?;
+        }
+
+        for content in msg.contents {
+            self.store_message_contents(content).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn store_message_contents(&self, contents: MessageContents) -> Result<(), AppError> {
+        sqlx::query!(
+            "INSERT INTO message_contents
+        (account_id, provider_msg_id, mime_type, body)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT (account_id, provider_msg_id, mime_type)
+        DO UPDATE SET body = excluded.body",
+            self.account_id,
+            contents.provider_msg_id,
+            contents.mime_type,
+            contents.body
+        )
+        .execute(&self.db_pool)
+        .await
+        .map_err(|e| {
+            error!("failed to insert skeleton msg: {e:?}");
+            AppError::Sqlx(e.into())
+        })
+        .map(|_| ())
+    }
+
+    pub async fn get_account_config(&self) -> Result<AccountConfig, AppError> {
+        sqlx::query!(
+            "SELECT account_config FROM email_accounts WHERE id = ? LIMIT 1",
+            self.account_id
+        )
+        .fetch_one(&self.db_pool)
+        .await
+        .map_err(|e| {
+            error!("failed to insert skeleton msg: {e:?}");
+            AppError::Sqlx(e.into())
+        })
+        .and_then(|it| {
+            serde_json::from_str(&it.account_config).map_err(|e| {
+                error!("failed to parse account config: {e:?}");
+                AppError::SerdeJson
+            })
+        })
+    }
+
+    pub async fn set_account_config(&self, config: &AccountConfig) -> Result<(), AppError> {
+        let str = serde_json::to_string(config).map_err(|e| {
+            error!("failed to parse account config: {e:?}");
+            AppError::SerdeJson
+        })?;
+
+        sqlx::query!(
+            "UPDATE email_accounts SET account_config = ? WHERE id = ?",
+            str,
+            self.account_id
+        )
+        .execute(&self.db_pool)
+        .await
+        .map_err(|e| {
+            error!("failed to insert skeleton msg: {e:?}");
+            AppError::Sqlx(e.into())
+        })
+        .map(|_| ())
+    }
+
+    pub async fn get_latest_sync_cursor(&self) -> Result<String, AppError> {
+        sqlx::query!(
+            "SELECT sync_cursor FROM messages WHERE account_id = ? AND sync_cursor IS NOT NULL ORDER BY internal_date DESC LIMIT 1",
+            self.account_id
+        )
+        .fetch_one(&self.db_pool)
+        .await
+        .map_err(|e| {
+            error!("in full_sync: db returned error {e:?}");
+            crate::AppError::Sqlx(e.into())
+        })
+        .and_then(|it| {
+            it.sync_cursor.ok_or(AppError::GmailErr(GmailError::MissingField(MissingField::SyncCursor)))
+        })
+    }
+}
+
+#[derive(sqlx::FromRow)]
+pub struct MessageContents {
+    pub provider_msg_id: String,
+    pub mime_type: String,
+    // TODO: convert to &str?
+    pub body: String,
+}
+
+pub struct MessageSkeleton {
+    pub provider_msg_id: String,
+}
+
+// each field is a message since they are
+// technically nullable in the DB
+pub struct Message {
+    pub provider_msg_id: Option<String>,
+    pub contents: Vec<MessageContents>,
+    pub label_ids: Vec<String>,
+    pub size_estimate: Option<i32>,
+
+    // headers:
+    // this is the gmail history id
+    pub thread_id: Option<String>,
+    pub sync_cursor: Option<String>,
+    pub internal_date: Option<i64>,
+    pub date_header: Option<String>,
+    pub from_addr: Option<String>,
+    pub to_addrs: Option<String>,
+    pub cc_addrs: Option<String>,
+    pub subject: Option<String>,
+    pub snippet: Option<String>,
 }

@@ -32,7 +32,8 @@ CREATE TABLE message_contents (
     mime_type TEXT CHECK (mime_type IN ('text/plain', 'text/html')) NOT NULL,
     body TEXT NOT NULL,
     PRIMARY KEY (account_id, provider_msg_id, mime_type),
-    FOREIGN KEY (account_id, provider_msg_id) REFERENCES messages(account_id, provider_msg_id) ON DELETE CASCADE
+    FOREIGN KEY (account_id, provider_msg_id) REFERENCES messages(account_id, provider_msg_id) ON DELETE CASCADE,
+    FOREIGN KEY (account_id) REFERENCES email_accounts(id) ON DELETE CASCADE
 );
 
 CREATE TABLE message_has_label (
@@ -41,5 +42,6 @@ CREATE TABLE message_has_label (
     label_id TEXT NOT NULL,
     PRIMARY KEY (account_id, provider_msg_id, label_id),
     FOREIGN KEY (account_id, provider_msg_id) REFERENCES messages(account_id, provider_msg_id) ON DELETE CASCADE,
-    FOREIGN KEY (label_id) REFERENCES labels(id)
+    FOREIGN KEY (account_id, label_id) REFERENCES labels(account_id, id),
+    FOREIGN KEY (account_id) REFERENCES email_accounts(id) ON DELETE CASCADE
 );
