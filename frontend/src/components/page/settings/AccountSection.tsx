@@ -5,7 +5,7 @@ import googleSigninLight from "@/assets/google_signin_light.svg";
 import googleSigninDark from "@/assets/google_signin_dark.svg";
 import { Button } from "@/components/ui/button";
 import { DevOnly } from "@/components/dev/DevOnly";
-import { commands, type ListEmailEntry } from "@/bindings";
+import { commands, type AppError, type ListEmailEntry } from "@/bindings";
 
 /*
 /// The user's email address.
@@ -30,6 +30,24 @@ const AccountSettings: React.FC = () => {
   };
 
   const [accs, setAccs] = React.useState<ListEmailEntry[]>([]);
+
+  const [syncBtnText, setSyncBtnText] = React.useState<string>("Sync");
+
+  const syncBtnOnClick = (id: string) => {
+
+    const req = commands.emailSync(id);
+
+    setSyncBtnText("⏳");
+    req.then((res) => {
+      if (res.status === 'ok') {
+        setSyncBtnText("☑️");
+      } else {
+        setSyncBtnText("❌");
+      }
+
+      setTimeout(() => setSyncBtnText("Sync"), 5000);
+    });
+  };
 
   const load_email_accs = () =>
     commands.emailListAccounts().then((it) => {
@@ -101,7 +119,12 @@ const AccountSettings: React.FC = () => {
                   onClick={() => commands.devEmailFullSync(acc.id)}
                   variant="destructive"
                 >
-                  Onboard Sync
+                  Full Sync
+                </Button>
+                <Button
+                  onClick={() => syncBtnOnClick(acc.id)}
+                >
+                  {syncBtnText}
                 </Button>
               </DevOnly>
             </span>

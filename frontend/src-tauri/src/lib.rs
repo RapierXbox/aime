@@ -1,4 +1,4 @@
-use std::{fs, num::NonZeroU16, time::Duration};
+use std::{fs, time::Duration};
 
 use log::{debug, error};
 use serde::Serialize;
@@ -23,6 +23,8 @@ pub const KEYRING_SERVICE: &str = "aime";
 pub mod error;
 pub use error::AppError;
 
+use crate::error::SqlxError;
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = Builder::<tauri::Wry>::new()
@@ -30,7 +32,8 @@ pub fn run() {
         .commands(collect_commands![
             gmail::register_gmail_account,
             email::email_list_accounts,
-            email::dev_email_full_sync
+            email::dev_email_full_sync,
+            email::email_sync
         ]);
 
     #[cfg(debug_assertions)] // <- Only export on non-release builds
@@ -67,18 +70,19 @@ fn setup(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     debug!("db_path={path_str:?}");
 
     // connect_lazy braucht ein async context, daher block_on
-    let pool = async_runtime::block_on(async {
-        let pres = sqlx::sqlite::SqlitePoolOptions::new()
+    let pres: Result<_, AppError> = async_runtime::block_on(async {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .acquire_timeout(Duration::from_secs(5))
-            .connect_lazy(path_str);
-        match pres {
-            Ok(pool) => {
-                sqlx::migrate!().run(&pool).await?;
-                Ok(pool)
-            }
-            Err(e) => Err(e),
-        }
-    })?;
+            .connect_lazy_with(SqliteConnectOptions::new().filename(sqlx_dir));
+
+        sqlx::migrate!().run(&pool).await.map_err(|e| {
+            error!("Failed to run migrations: {e:?}");
+            SqlxError::Other
+        })?;
+        Ok(pool)
+    });
+
+    let pool = pres?;
 
     // setup the email handling
     email::setup(app, &pool)?;

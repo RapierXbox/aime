@@ -7,10 +7,10 @@ use std::{
 use base64::prelude::*;
 use base64::Engine;
 use futures::{task, StreamExt};
-use google_gmail1::api::MessagePartBody;
-use google_gmail1::hyper::client;
+use google_gmail1::api::{History, ListHistoryResponse, MessagePartBody};
+use google_gmail1::hyper::{self, client};
 use google_gmail1::{
-    api::{Message, MessagePart},
+    api::MessagePart,
     hyper_rustls::HttpsConnector,
     hyper_util::client::legacy::connect::{dns::GaiResolver, HttpConnector},
 };
@@ -19,10 +19,14 @@ use log::{trace, warn};
 use tauri::State;
 use tokio::{fs::File, io::AsyncWriteExt, stream};
 
-use crate::email::repo::{GmailRepo, MessageContents, MissingField};
+use crate::email;
+use crate::email::gmail::repo::GmailRepo;
+use crate::email::repo::{Label, MessageSkeleton};
 use crate::{
     email::{
-        repo::{self, AccountConfig, AddLabelStatus, EmailAccount, HistoryID},
+        repo::{
+            AccountConfig, AddLabelStatus, EmailAccount, HistoryID, MessageContents, MissingField,
+        },
         EmailManager,
     },
     AppError, DbPool,
@@ -31,6 +35,7 @@ use crate::{
 pub type GmailApiClient = google_gmail1::Gmail<HttpsConnector<HttpConnector>>;
 
 pub mod auth;
+pub mod repo;
 
 pub struct GmailClient {
     client: GmailApiClient,
@@ -51,6 +56,8 @@ impl std::fmt::Debug for GmailClient {
 }
 
 impl GmailClient {
+    const N_FETCH_WORKERS: usize = 4;
+
     pub fn new(
         account_id: i64,
         db_pool: DbPool,
@@ -72,81 +79,164 @@ impl GmailClient {
         &self.client
     }
 
-    /// labels are used for sorting messages into inboxes as well as user defined labels
-    /// this function refetches the user's available labels and (will) invalidate the frontend labels query
-    async fn sync_labels(&self) -> Result<(), crate::AppError> {
-        // list the labels from the gmail api
-        let (_, res) = self
-            .client
-            .users()
-            .labels_list("me")
-            .doit()
-            .await
-            .map_err(|e| {
-                error!("failed to list labels: {e:?}");
-                GmailApiError::from(e)
-            })?;
+    /// Synchronize this GmailClient with the Gmail API,
+    /// follows [https://developers.google.com/workspace/gmail/api/guides/sync]
+    ///
+    /// Either performs a partial sync, or if not possible, a full sync.
+    pub async fn sync(&self) -> Result<(), AppError> {
+        self.sync_labels().await?;
+        info!("synced labels");
 
-        let Some(labels) = res.labels else {
-            error!("gmail sync no labels returned");
-            return Err(crate::AppError::GmailMissingLabels);
-        };
+        let AccountConfig::Gmail { history_id, .. } = self.repo.get_account_config().await?;
+        info!("got account config! history_id: {:?}", history_id);
 
-        info!("Got Labels: {labels:#?}");
-        let mut label_status = AddLabelStatus::AlreadyExists;
-        for label in labels {
-            // extract the required fields
-            let google_gmail1::api::Label {
-                id: Some(id),
-                name: Some(name),
-                message_list_visibility,
-                label_list_visibility,
-                type_: Some(type_),
-                ..
-            } = label
-            else {
-                error!("label missing required fields: {:?}", label);
-                return Err(AppError::from(GmailError::MissingField(
-                    MissingField::InLabel,
-                )));
-            };
+        match history_id {
+            HistoryID::LastSynced(to) => {
+                info!("performing partial sync");
+                let start_history_id = to.parse().map_err(|_| AppError::ParseAccountID)?;
+                let res = self.partial_sync(start_history_id).await;
 
-            let status = self
-                .repo
-                .add_label(repo::Label {
-                    id,
-                    name,
-                    message_list_visibility,
-                    label_list_visibility,
-                    type_,
-                })
-                .await?;
+                match res {
+                    Ok(_) => {
+                        info!("partial sync succeeded");
+                        res
+                    }
 
-            if matches!(status, AddLabelStatus::Inserted) {
-                label_status = AddLabelStatus::Inserted;
+                    Err(e) => {
+                        // if the partial sync fails, fall back to full sync
+                        info!("partial sync failed: {e:?}, trying full sync");
+                        self.full_sync().await
+                    }
+                }
+            }
+            HistoryID::KnownStale => {
+                info!("history_id is known stale, performing full sync");
+                self.full_sync().await
             }
         }
-
-        if matches!(label_status, AddLabelStatus::Inserted) {
-            info!("New Label was added");
-            // TODO: invalidate frontend labels
-        }
-
-        Ok(())
     }
 
+    async fn partial_sync(&self, start_history_id: u64) -> Result<(), crate::AppError> {
+        let res = self
+            .client
+            .users()
+            .history_list("me")
+            .start_history_id(start_history_id)
+            .doit()
+            .await;
+
+        match res {
+            Err(e) => match e {
+                // on 404, we need to perform a full_sync
+                google_gmail1::Error::Failure(res)
+                    if res.status() == hyper::StatusCode::NOT_FOUND =>
+                {
+                    warn!("got a 404 {res:?} on users.history.list. Performing full sync");
+                    self.full_sync().await?;
+                    todo!()
+                }
+                _ => return Err(e.into()),
+            },
+
+            // no updates since the last sync
+            Ok((
+                _,
+                ListHistoryResponse {
+                    history: None,
+                    history_id: Some(history_id_new),
+                    ..
+                },
+            )) => {
+                info!("got empty history list, completing!");
+                self.repo
+                    .set_account_config_sync_cursor(history_id_new.to_string())
+                    .await?;
+                return Ok(());
+            }
+
+            Ok((
+                _,
+                ListHistoryResponse {
+                    history: Some(history),
+                    history_id: Some(history_id_new),
+                    next_page_token,
+                    ..
+                },
+            )) => {
+                // TODO: crash edge case, when the app crashes between syncing pages, it applies the edits already done twice
+                // apply the first history part
+                self.repo.apply_history(history).await?;
+
+                let mut running_page_token = next_page_token;
+                while let Some(ref token) = running_page_token {
+                    info!("incr sync res_history_id={history_id_new}, target={start_history_id} page 1 done");
+
+                    let (_, res) = self
+                        .client
+                        .users()
+                        .history_list("me")
+                        .page_token(token)
+                        // use the history_id from the request response
+                        .start_history_id(start_history_id)
+                        .doit()
+                        .await?;
+
+                    match res {
+                        ListHistoryResponse {
+                            history: Some(paged_history),
+                            next_page_token,
+                            ..
+                        } => {
+                            self.repo.apply_history(paged_history).await?;
+                            running_page_token = next_page_token;
+                        }
+
+                        ListHistoryResponse {
+                            history: None,
+                            history_id: Some(history_id_finished),
+                            ..
+                        } => {
+                            self.repo
+                                .set_account_config_sync_cursor(history_id_finished.to_string())
+                                .await?;
+                            return Ok(());
+                        }
+
+                        _ => return Err(crate::AppError::GmailResponseIncomplete),
+                    }
+                }
+
+                info!("finished partial sync to {history_id_new}");
+
+                self.repo
+                    .set_account_config_sync_cursor(history_id_new.to_string())
+                    .await?;
+
+                return Ok(());
+            }
+
+            Ok((d, r)) => {
+                error!("got messages.list response, didnt match correctly! r={r:#?}");
+                todo!()
+            }
+        }
+    }
+
+    // https://developers.google.com/workspace/gmail/api/guides/sync#full-sync
+    // todo: return u64
+    // TODO: this misses deleted messages since the fetch_and_store_skeletons doesnt delete records that werent touched
     pub async fn full_sync(&self) -> Result<(), crate::AppError> {
         // TODO: include spam/trash? decide: lazy sync inboxes?
 
-        self.sync_labels().await?;
         self.fetch_and_store_message_skeletons().await?;
-        self.backfill_messages().await?;
+        self.backfill_messages(self.repo.stream_all_messages())
+            .await?;
 
         info!(
             "full_sync: finished backfilling all messages for account_id={}",
             self.account_id
         );
-
+        // todo: should be the the first message in the messages.list response
         let latest_history_id = self.repo.get_latest_sync_cursor().await?;
         let config = self.repo.get_account_config().await?;
 
@@ -169,9 +259,72 @@ impl GmailClient {
         Ok(())
     }
 
-    const N_FETCH_WORKERS: usize = 4;
-    async fn backfill_messages(&self) -> Result<(), AppError> {
-        let stream = self.repo.stream_message_skeletons();
+    /// labels are used for sorting messages into inboxes as well as user defined labels
+    /// this function refetches the user's available labels and (will) invalidate the frontend labels query
+    async fn sync_labels(&self) -> Result<(), crate::AppError> {
+        // list the labels from the gmail api
+        let (_, res) = self
+            .client
+            .users()
+            .labels_list("me")
+            .doit()
+            .await
+            .map_err(|e| {
+                error!("failed to list labels: {e:?}");
+                GmailApiError::from(e)
+            })?;
+
+        let Some(labels) = res.labels else {
+            error!("gmail sync no labels returned");
+            return Err(crate::AppError::GmailMissingLabels);
+        };
+
+        let mut label_status = AddLabelStatus::AlreadyExists;
+        for label in labels {
+            // extract the required fields
+            let google_gmail1::api::Label {
+                id: Some(id),
+                name: Some(name),
+                message_list_visibility,
+                label_list_visibility,
+                type_: Some(type_),
+                ..
+            } = label
+            else {
+                error!("label missing required fields: {:?}", label);
+                return Err(AppError::from(GmailError::MissingField(
+                    MissingField::InLabel,
+                )));
+            };
+
+            let status = self
+                .repo
+                .add_label(Label {
+                    id,
+                    name,
+                    message_list_visibility,
+                    label_list_visibility,
+                    type_,
+                })
+                .await?;
+
+            if matches!(status, AddLabelStatus::Inserted) {
+                label_status = AddLabelStatus::Inserted;
+            }
+        }
+
+        if matches!(label_status, AddLabelStatus::Inserted) {
+            info!("New Label was added");
+            // TODO: invalidate frontend labels
+        }
+
+        Ok(())
+    }
+
+    async fn backfill_messages(
+        &self,
+        stream: impl futures::Stream<Item = Result<MessageSkeleton, AppError>>,
+    ) -> Result<(), AppError> {
         info!(
             "starting parallel backfill for account_id={}",
             self.account_id
@@ -179,7 +332,7 @@ impl GmailClient {
 
         // fetch the messages in parallel and load them into the db
         stream
-            .map(|it| async { self.fetch_and_store_message(&it?.provider_msg_id).await })
+            .map(|it| async { self.fetch_and_store_skeleton(it?).await })
             .buffer_unordered(Self::N_FETCH_WORKERS)
             .for_each(|res| async {
                 if let Err(e) = res {
@@ -191,18 +344,24 @@ impl GmailClient {
         Ok(())
     }
 
-    /// fetch, parse and store a single message
-    async fn fetch_and_store_message(&self, msg_id: &str) -> Result<(), crate::AppError> {
+    /// fetch, parse and store a single message, backfilling a message skeleton
+    /// this may also update the labelIds of a previously cached message
+    async fn fetch_and_store_skeleton(&self, s: MessageSkeleton) -> Result<(), crate::AppError> {
         let (_, msg) = self
             .client
             .users()
-            .messages_get("me", msg_id)
+            .messages_get("me", &s.provider_msg_id)
+            .format(if s.previously_cached {
+                "minimal"
+            } else {
+                "full"
+            })
             .doit()
             .await?;
 
         let message = Self::parse_message(msg)?;
 
-        self.repo.store_message(message).await
+        self.repo.backfill_message(message).await
     }
 
     /// Synchronize and store the message skeletons from users.messages.list
@@ -266,26 +425,28 @@ impl GmailClient {
         Ok(())
     }
 
-    fn parse_message(msg: Message) -> Result<repo::Message, AppError> {
+    fn parse_message(
+        msg: google_gmail1::api::Message,
+    ) -> Result<crate::email::repo::Message, AppError> {
         let Some(payload) = msg.payload.clone() else {
-            return Err(GmailError::MissingField(repo::MissingField::Payload).into());
+            return Err(GmailError::MissingField(MissingField::Payload).into());
         };
 
         // parse headers
         let Some(headers) = payload.headers.clone() else {
-            return Err(GmailError::MissingField(repo::MissingField::Headers).into());
+            return Err(GmailError::MissingField(MissingField::Headers).into());
         };
 
         let mut header_map: HashMap<String, String> =
             HashMap::from_iter(headers.into_iter().filter_map(|it| it.name.zip(it.value)));
 
         let Some(msg_id) = msg.id.clone() else {
-            return Err(GmailError::MissingField(repo::MissingField::MsgId).into());
+            return Err(GmailError::MissingField(MissingField::MsgId).into());
         };
 
         // TODO: implement tree-walking for this,
         // currently only supports one layer of container mesages
-        let contents: Vec<repo::MessageContents> = match payload {
+        let contents: Vec<MessageContents> = match payload {
             // container MIME message part
             // assumes all children are leafs
             MessagePart {
@@ -298,7 +459,7 @@ impl GmailClient {
                 .filter_map(|it| match it {
                     Ok(v) => Some(v),
                     Err(e) => {
-                        error!("skipping message part headers={headers:?} inside msg_id={msg_id} err={e:?}");
+                        error!("skipping message part inside msg_id={msg_id} err={e:?}");
                         None
                     }
                 })
@@ -329,7 +490,7 @@ impl GmailClient {
 
         let snippet = msg.snippet;
 
-        Ok(repo::Message {
+        Ok(crate::email::repo::Message {
             contents,
             sync_cursor,
             thread_id,
@@ -351,7 +512,7 @@ impl GmailClient {
     fn parse_mime_leaf(
         part: MessagePart,
         provider_msg_id: String,
-    ) -> Result<repo::MessageContents, AppError> {
+    ) -> Result<email::repo::MessageContents, AppError> {
         let MessagePart {
             body:
                 Some(MessagePartBody {
@@ -376,7 +537,7 @@ impl GmailClient {
             AppError::InvalidEmailBody
         })?;
 
-        Ok(repo::MessageContents {
+        Ok(MessageContents {
             body,
             provider_msg_id,
             mime_type,
@@ -474,7 +635,7 @@ pub enum GmailError {
     MessagePartNotLeaf,
 
     #[error("Missing field {0:?} in response")]
-    MissingField(repo::MissingField),
+    MissingField(MissingField),
 }
 
 #[tauri::command]
@@ -506,7 +667,7 @@ pub async fn register_gmail_account(
 
     tmp_auth.save_to_keyring(&app, &email)?;
 
-    let id = repo::add_account(
+    let id = email::repo::add_account(
         &db_pool,
         EmailAccount {
             id: -1,

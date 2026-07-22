@@ -128,6 +128,9 @@ pub enum AppError {
     #[error("could not parse account id")]
     ParseAccountID,
 
+    #[error("could not parse sync cursor")]
+    ParseSyncCursor,
+
     #[error("could not parse email body")]
     InvalidEmailBody,
 }

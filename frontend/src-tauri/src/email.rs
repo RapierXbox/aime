@@ -16,14 +16,13 @@ use tokio::sync::Mutex;
 use crate::{
     email::{
         self,
-        gmail::{auth::Auth, GmailApiClient, GmailClient, GmailError},
-        repo::{add_label, AddLabelStatus},
+        gmail::{auth::Auth, GmailApiClient},
     },
     AppError, DbPool,
 };
 
 pub mod gmail;
-mod repo;
+pub mod repo;
 
 #[derive(Clone, Debug)]
 pub struct EmailManager {
@@ -160,4 +159,26 @@ pub async fn dev_email_full_sync(
         .await
         .ok_or(AppError::AccountNotFound)?;
     client.full_sync().await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn email_sync(
+    account_id: String,
+    email_mng: State<'_, EmailManager>,
+    db_pool: State<'_, DbPool>,
+) -> Result<(), crate::AppError> {
+    let account_id = account_id
+        .parse::<i64>()
+        .map_err(|_| crate::AppError::ParseAccountID)?;
+
+    let client = email_mng
+        .inner()
+        .get_client(account_id)
+        .await
+        .ok_or(AppError::AccountNotFound)?;
+
+    let res = client.sync().await;
+    info!("email_sync res = {res:?}");
+    res
 }

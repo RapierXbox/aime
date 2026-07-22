@@ -15,10 +15,11 @@ export const commands = {
 	 *  - `account_id`: The ID of the account to sync, a u64 serialized as a String
 	 */
 	devEmailFullSync: (accountId: string) => typedError<null, AppError>(__TAURI_INVOKE("dev_email_full_sync", { accountId })),
+	emailSync: (accountId: string) => typedError<null, AppError>(__TAURI_INVOKE("email_sync", { accountId })),
 };
 
 /* Types */
-export type AppError = "MissingDbPath" | "GmailResponseIncomplete" | "OAuth" | ({ HttpErr: number }) & { GmailApiErr?: never; GmailErr?: never; Sqlx?: never } | ({ Sqlx: SqlxError }) & { GmailApiErr?: never; GmailErr?: never; HttpErr?: never } | "IOError" | "UrlParseError" | "KeyringSaveError" | "KeyringLoadError" | "AccountTypeMismatch" | "GmailMissingLabels" | "SerdeJson" | "AccountNotFound" | ({ GmailErr: GmailError }) & { GmailApiErr?: never; HttpErr?: never; Sqlx?: never } | ({ GmailApiErr: GmailApiError }) & { GmailErr?: never; HttpErr?: never; Sqlx?: never } | "ParseAccountID" | "InvalidEmailBody";
+export type AppError = "MissingDbPath" | "GmailResponseIncomplete" | "OAuth" | ({ HttpErr: number }) & { GmailApiErr?: never; GmailErr?: never; Sqlx?: never } | ({ Sqlx: SqlxError }) & { GmailApiErr?: never; GmailErr?: never; HttpErr?: never } | "IOError" | "UrlParseError" | "KeyringSaveError" | "KeyringLoadError" | "AccountTypeMismatch" | "GmailMissingLabels" | "SerdeJson" | "AccountNotFound" | ({ GmailErr: GmailError }) & { GmailApiErr?: never; HttpErr?: never; Sqlx?: never } | ({ GmailApiErr: GmailApiError }) & { GmailErr?: never; HttpErr?: never; Sqlx?: never } | "ParseAccountID" | "ParseSyncCursor" | "InvalidEmailBody";
 
 export type GmailApiError = "HttpError" | ({ UploadSizeLimitExceeded: {
 	resource_size: number | null,
