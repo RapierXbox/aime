@@ -13,49 +13,31 @@ import {
 } from "@/bindings";
 import { Channel } from "@tauri-apps/api/core";
 import { Progress as ProgressBar } from "radix-ui";
+import { useQuery } from "@tanstack/react-query";
+import { qk } from "@/lib/queryKeys";
 
-/*
-/// The user's email address.
-#[serde(rename = "emailAddress")]
-pub email_address: Option<String>,
-/// The ID of the mailbox's current history record.
-#[serde(rename = "historyId")]
-#[serde_as(as = "Option<serde_with::DisplayFromStr>")]
-pub history_id: Option<u64>,
-/// The total number of messages in the mailbox.
-#[serde(rename = "messagesTotal")]
-pub messages_total: Option<i32>,
-/// The total number of threads in the mailbox.
-#[serde(rename = "threadsTotal")]
-pub threads_total: Option<i32>,*/
-
-const AccountSettings: React.FC = () => {
-  // const _user = useAuthStore((state) => state.account);
-  const user = {
-    name: "John Doe",
-    email: "john.doe@example.com",
-  };
-
-  const [accs, setAccs] = React.useState<ListEmailEntry[]>([]);
-
+// a singular entry with sync and refresh buttons
+const EmailAccEntry: React.FC<{ acc: ListEmailEntry }> = ({ acc }) => {
   const [syncBtnText, setSyncBtnText] = React.useState<string>("Sync");
-
   const [progress, setProgress] = React.useState<number | null>(null);
-
   const chan = new Channel<Progress>();
+
   chan.onmessage = (p) => {
-    console.log(p);
     if (p.Update) {
+      if (p.Update.completed === p.Update.out_of) {
+        setTimeout(() => setProgress(null), 5000);
+      }
+
       setProgress(p.Update.completed / p.Update.out_of);
     }
   };
 
-  const fullSyncBtnOnclick = (id: string) => {
-    commands.devEmailFullSync(id, chan);
+  const fullSyncBtnOnclick = () => {
+    commands.devEmailFullSync(acc.id, chan);
   };
 
-  const syncBtnOnClick = (id: string) => {
-    const req = commands.emailSync(id, chan);
+  const syncBtnOnClick = () => {
+    const req = commands.emailSync(acc.id, chan);
 
     setSyncBtnText("⏳");
     req.then((res) => {
@@ -69,21 +51,8 @@ const AccountSettings: React.FC = () => {
     });
   };
 
-  const load_email_accs = () =>
-    commands.emailListAccounts().then((it) => {
-      if (it.status === "ok") {
-        setAccs(it.data);
-      } else {
-        throw it.error;
-      }
-    });
-
-  useEffect(() => {
-    load_email_accs();
-  }, []);
-
   return (
-    <section className="flex flex-col gap-2 w-full">
+    <div>
       {progress !== null && (
         <ProgressBar.Root
           value={progress * 100}
@@ -96,6 +65,37 @@ const AccountSettings: React.FC = () => {
         </ProgressBar.Root>
       )}
 
+      <div className="flex">
+        <span className="font-medium mr-auto">{acc.name}</span>
+
+        <Button className="" onClick={syncBtnOnClick}>
+          {syncBtnText}
+        </Button>
+        <Button variant="destructive" onClick={fullSyncBtnOnclick}>
+          Full Sync
+        </Button>
+      </div>
+    </div>
+  );
+};
+
+const AccountSettings: React.FC = () => {
+  const email_accs = useQuery({
+    queryKey: qk.accounts,
+    queryFn: () =>
+      commands.emailListAccounts().then((it) => {
+        if (it.status === "error") throw it.error;
+        return it.data;
+      }),
+  });
+
+  const user = {
+    name: "John Doe",
+    email: "john.doe@example.com",
+  };
+
+  return (
+    <section className="flex flex-col gap-2 w-full">
       <span className="text-2xl font-heading">Account</span>
       <div className="flex ">
         <div
@@ -124,7 +124,6 @@ const AccountSettings: React.FC = () => {
                   throw it.error;
                 }
 
-                load_email_accs();
               });
             }}
           >
@@ -142,23 +141,8 @@ const AccountSettings: React.FC = () => {
         </div>
 
         <Separator orientation="horizontal" />
-        {accs.map((acc) => (
-          <div key={acc.id}>
-            <span className="font-medium">
-              {acc.name}
-              <DevOnly>
-                <Button
-                  onClick={() => fullSyncBtnOnclick(acc.id)}
-                  variant="destructive"
-                >
-                  Full Sync
-                </Button>
-                <Button onClick={() => syncBtnOnClick(acc.id)}>
-                  {syncBtnText}
-                </Button>
-              </DevOnly>
-            </span>
-          </div>
+        {email_accs.data?.map((acc) => (
+          <EmailAccEntry acc={acc} key={acc.id} />
         ))}
       </div>
     </section>

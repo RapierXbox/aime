@@ -20,8 +20,9 @@ use tauri::ipc::Channel;
 use tauri::State;
 use tokio::{fs::File, io::AsyncWriteExt, stream};
 
-use crate::email::gmail::repo::GmailRepo;
-use crate::email::repo::{Label, MessageSkeleton};
+use crate::email::gmail::repo::{GmailRepo, MessageStream};
+use crate::email::repo::{Label, Message, MessageSkeleton};
+use crate::email::MailBox;
 use crate::{email, Progress, ProgressReporter};
 use crate::{
     email::{
@@ -86,7 +87,7 @@ impl GmailClient {
     /// Either performs a partial sync, or if not possible, a full sync.
     pub async fn sync(&self, update_channel: Channel<crate::Progress>) -> Result<(), AppError> {
         update_channel.report(Progress::Update {
-            completed: 1,
+            completed: 0,
             out_of: Some(3),
         });
 
@@ -119,8 +120,9 @@ impl GmailClient {
 
                     Err(e) => {
                         // if the partial sync fails, fall back to full sync
-                        info!("partial sync failed: {e:?}, trying full sync");
-                        self.full_sync(update_channel.clone()).await
+                        error!("partial sync failed: {e:?}, trying full sync");
+                        // self.full_sync(update_channel.clone()).await
+                        todo!()
                     }
                 }
             }
@@ -136,6 +138,11 @@ impl GmailClient {
         start_history_id: u64,
         updates: Channel<Progress>,
     ) -> Result<(), crate::AppError> {
+        // first invalidate the sync cursor to avoid failed syncs messing up data
+        self.repo
+            .set_account_config_sync_cursor(HistoryID::KnownStale)
+            .await?;
+
         let res = self
             .client
             .users()
@@ -144,6 +151,11 @@ impl GmailClient {
             .doit()
             .await;
 
+        updates.report(Progress::Update {
+            completed: 2,
+            out_of: Some(4),
+        });
+
         match res {
             Err(e) => match e {
                 // on 404, we need to perform a full_sync
@@ -151,8 +163,7 @@ impl GmailClient {
                     if res.status() == hyper::StatusCode::NOT_FOUND =>
                 {
                     warn!("got a 404 {res:?} on users.history.list. Performing full sync");
-                    self.full_sync(updates.clone()).await?;
-                    todo!()
+                    return Err(AppError::GmailResponseIncomplete);
                 }
                 _ => return Err(e.into()),
             },
@@ -173,7 +184,9 @@ impl GmailClient {
 
                 info!("got empty history list, completing!");
                 self.repo
-                    .set_account_config_sync_cursor(history_id_new.to_string())
+                    .set_account_config_sync_cursor(HistoryID::LastSynced(
+                        history_id_new.to_string(),
+                    ))
                     .await?;
                 return Ok(());
             }
@@ -190,19 +203,25 @@ impl GmailClient {
             )) => {
                 self.apply_partial_sync_history(
                     start_history_id,
-                    updates,
+                    updates.clone(),
                     history,
                     history_id_new,
                     next_page_token,
                 )
-                .await
+                .await?;
             }
 
             Ok((d, r)) => {
                 error!("got messages.list response, didnt match correctly! r={r:#?}");
-                todo!()
+                return Err(crate::AppError::GmailResponseIncomplete);
             }
         }
+
+        // the added messages need to be loaded
+        self.backfill_messages(self.repo.stream_message_skeletons().await?, updates)
+            .await?;
+
+        Ok(())
     }
 
     async fn apply_partial_sync_history(
@@ -250,16 +269,16 @@ impl GmailClient {
                     history_id: Some(history_id_finished),
                     ..
                 } => {
-                    let total = self.repo.count_message_skeletons().await?;
                     self.backfill_messages(
-                        self.repo.stream_message_skeletons(),
-                        total,
+                        self.repo.stream_message_skeletons().await?,
                         updates.clone(),
                     )
                     .await?;
 
                     self.repo
-                        .set_account_config_sync_cursor(history_id_finished.to_string())
+                        .set_account_config_sync_cursor(email::repo::HistoryID::LastSynced(
+                            history_id_finished.to_string(),
+                        ))
                         .await?;
 
                     return Ok(());
@@ -271,9 +290,11 @@ impl GmailClient {
 
         info!("finished partial sync to {history_id_new}");
         self.repo
-            .set_account_config_sync_cursor(history_id_new.to_string())
+            .set_account_config_sync_cursor(email::repo::HistoryID::LastSynced(
+                history_id_new.to_string(),
+            ))
             .await?;
-        return Ok(());
+
         Ok(())
     }
 
@@ -286,8 +307,8 @@ impl GmailClient {
         self.fetch_and_store_message_skeletons(updates.clone())
             .await?;
 
-        let total = self.repo.count_all_messages().await?;
-        self.backfill_messages(self.repo.stream_all_messages(), total, updates.clone())
+        // refetch all messages
+        self.backfill_messages(self.repo.stream_all_messages().await?, updates.clone())
             .await?;
 
         info!(
@@ -379,12 +400,13 @@ impl GmailClient {
 
     async fn backfill_messages(
         &self,
-        stream: impl futures::Stream<Item = Result<MessageSkeleton, AppError>>,
-        total: u64,
+        msgs: MessageStream<impl futures::Stream<Item = Result<MessageSkeleton, AppError>>>,
         updates: Channel<Progress>,
     ) -> Result<(), AppError> {
+        let MessageStream { stream, total } = msgs;
+
         info!(
-            "starting parallel backfill for account_id={}",
+            "starting backfill for account_id={} n_messages={total}",
             self.account_id
         );
 
@@ -392,20 +414,28 @@ impl GmailClient {
 
         // fetch the messages in parallel and load them into the db
         stream
-            .map(|it| async { self.fetch_and_store_skeleton(it?).await })
+            .map(|it| async {
+                let s = match it {
+                    Ok(s) => s,
+                    Err(e) => return error!("failed to read message skeleton: {e:?}"),
+                };
+
+                // gather message id for better logging
+                let id = s.provider_msg_id.clone();
+
+                if let Err(e) = self.fetch_and_store_skeleton(s).await {
+                    error!("failed to load message id={id}: {e:?}");
+                }
+            })
             .buffer_unordered(Self::N_FETCH_WORKERS)
-            .for_each(|res| {
+            .for_each(|()| {
                 let n = completed.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                 updates.report(Progress::Update {
                     completed: n,
-                    out_of: Some(total),
+                    out_of: Some(total.max(n)),
                 });
 
-                async move {
-                    if let Err(e) = res {
-                        error!("failed to load message: {e:?}");
-                    }
-                }
+                async move {}
             })
             .await;
 
@@ -443,6 +473,7 @@ impl GmailClient {
             .client
             .users()
             .messages_list("me")
+            .include_spam_trash(true)
             .max_results(500)
             .doit()
             .await
@@ -475,6 +506,7 @@ impl GmailClient {
                 .client
                 .users()
                 .messages_list("me")
+                .include_spam_trash(true)
                 .max_results(500)
                 .page_token(&token)
                 .doit()
@@ -503,11 +535,29 @@ impl GmailClient {
         Ok(())
     }
 
+    // parses a single message from the Gmail API into a [`Message`] struct
+    // also works on format=minimal
     fn parse_message(
         msg: google_gmail1::api::Message,
     ) -> Result<crate::email::repo::Message, AppError> {
         let Some(payload) = msg.payload.clone() else {
-            return Err(GmailError::MissingField(MissingField::Payload).into());
+            // try minimal format
+            match msg {
+                google_gmail1::api::Message {
+                    id: Some(msg_id),
+                    label_ids: Some(label_ids),
+                    ..
+                } => {
+                    return Ok(Message {
+                        provider_msg_id: Some(msg_id),
+                        label_ids,
+                        ..Default::default()
+                    })
+                }
+                _ => {
+                    return Err(GmailError::MissingField(MissingField::Payload).into());
+                }
+            }
         };
 
         // parse headers
@@ -620,6 +670,14 @@ impl GmailClient {
             provider_msg_id,
             mime_type,
         })
+    }
+
+    pub async fn list_messages(
+        &self,
+        mailbox: MailBox,
+        page_index: u32,
+    ) -> Result<Vec<email::repo::Message>, AppError> {
+        self.repo.list_messages(mailbox, page_index).await
     }
 }
 

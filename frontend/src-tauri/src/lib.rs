@@ -46,6 +46,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_keyring::init())
+        // run the setup fn below
         .setup(setup)
         .invoke_handler(builder.invoke_handler())
         .run(tauri::generate_context!())
@@ -55,6 +56,7 @@ pub fn run() {
 pub type DbPool = sqlx::sqlite::SqlitePool;
 
 fn setup(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
+    // add level filter info  for debug builds
     if cfg!(debug_assertions) {
         app.handle().plugin(
             tauri_plugin_log::Builder::default()
@@ -63,20 +65,23 @@ fn setup(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
         )?;
     }
 
+    // -- db setup
     let sqlx_dir = app.path().app_data_dir()?.join("aime.sqlite");
     if let Some(parent) = sqlx_dir.parent() {
         fs::create_dir_all(parent)?;
     }
-
     let path_str = sqlx_dir.to_str().ok_or(AppError::MissingDbPath)?;
-
     debug!("db_path={path_str:?}");
 
     // connect_lazy braucht ein async context, daher block_on
     let pres: Result<_, AppError> = async_runtime::block_on(async {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .acquire_timeout(Duration::from_secs(5))
-            .connect_lazy_with(SqliteConnectOptions::new().filename(sqlx_dir));
+            .connect_lazy_with(
+                SqliteConnectOptions::new()
+                    .filename(sqlx_dir)
+                    .optimize_on_close(true, None),
+            );
 
         sqlx::migrate!().run(&pool).await.map_err(|e| {
             error!("Failed to run migrations: {e:?}");

@@ -174,7 +174,7 @@ impl Auth {
     }
 
     // todo: this api should use typestate to ensure the account is a gmail account
-    pub fn reinstantiate(
+    pub fn new(
         app: &AppHandle,
         account: EmailAccount,
         http_client: reqwest::Client,

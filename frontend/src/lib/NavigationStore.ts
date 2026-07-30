@@ -14,6 +14,11 @@ export type Page =
   | {
       page: "settings";
       section: SettingsSection;
+    }
+  | {
+      page: "inbox";
+      accountId: string;
+      inboxId: string;
     };
 
 type NavigationStoreState = {
@@ -44,6 +49,7 @@ export const useNavigationStore = create<NavigationStore>()((set) => ({
   currentPageIndex: 0,
   navigateTo: (page: Page) => {
     set((state) => {
+      // if the page is already at the top of the stack, do nothing
       if (shallowCompare(state.navStack[state.currentPageIndex], page)) {
         return {};
       }

@@ -1,3 +1,10 @@
+//! # Email Management
+//!
+//! ## Inboxes
+//! The default inboxes that should be displayed to the user are INBOX, SENT, DRAFT, STARRED, TRASH, SPAM
+//! Use with `enum MailBox`
+//! They are saved as labels and attached via message_has_label
+
 use std::{collections::HashMap, sync::Arc};
 
 use google_gmail1::{
@@ -10,6 +17,7 @@ use google_gmail1::{
 use log::{error, info};
 use oauth2::reqwest;
 use serde::{Deserialize, Serialize};
+use specta::Type;
 use tauri::{async_runtime, ipc::Channel, window::ProgressBarState, App, Manager, State};
 use tokio::sync::Mutex;
 
@@ -23,6 +31,18 @@ use crate::{
 
 pub mod gmail;
 pub mod repo;
+
+#[derive(Debug, Clone, Serialize, Type, sqlx::Type)]
+#[serde(rename_all = "UPPERCASE")]
+#[sqlx(type_name = "varchar", rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum MailBox {
+    Inbox,
+    Sent,
+    Draft,
+    Starred,
+    Trash,
+    Spam,
+}
 
 #[derive(Clone, Debug)]
 pub struct EmailManager {
@@ -82,7 +102,7 @@ pub fn setup(app: &mut App, db: &DbPool) -> Result<(), Box<dyn std::error::Error
                 (
                     email,
                     account_id,
-                    Auth::reinstantiate(&app_handle, acc.clone(), oauth_http_client.clone()),
+                    Auth::new(&app_handle, acc.clone(), oauth_http_client.clone()),
                 )
             })
             .filter_map(|(email, account_id, auth_client)| match auth_client {
@@ -183,4 +203,26 @@ pub async fn email_sync(
     let res = client.sync(update_channel).await;
     info!("email_sync res = {res:?}");
     res
+}
+
+/// return a list of message stubs
+#[tauri::command]
+#[specta::specta]
+pub async fn list_messages(
+    account_id: String,
+    page_index: u32,
+    mailbox: MailBox,
+    email_mng: State<'_, EmailManager>,
+) -> Result<Vec<repo::Message>, AppError> {
+    let account_id = account_id
+        .parse::<i64>()
+        .map_err(|_| crate::AppError::ParseAccountID)?;
+
+    let client = email_mng
+        .inner()
+        .get_client(account_id)
+        .await
+        .ok_or(AppError::AccountNotFound)?;
+
+    client.list_messages(mailbox, page_index).await
 }

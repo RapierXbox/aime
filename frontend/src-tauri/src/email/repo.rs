@@ -8,8 +8,18 @@ use log::{error, info};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use sqlx::{Connection, Executor, Sqlite, Transaction};
+use tauri_specta::Event;
 
 use crate::{email::gmail::GmailError, AppError, DbPool};
+
+#[derive(Clone, Debug, Type, Event, Serialize)]
+pub enum InvalidateEvent {
+    Accounts,
+    Messages {
+        #[specta(type = String)]
+        account_id: i64,
+    },
+}
 
 // todo: use typestate and enum to model account types
 #[derive(Debug, Clone)]
@@ -154,7 +164,7 @@ impl From<MissingField> for AppError {
     }
 }
 
-#[derive(sqlx::FromRow)]
+#[derive(sqlx::FromRow, Debug)]
 pub struct MessageContents {
     pub provider_msg_id: String,
     pub mime_type: String,
@@ -171,6 +181,7 @@ pub struct MessageSkeleton {
 
 // each field is a message since they are
 // technically nullable in the DB
+#[derive(Debug, Default)]
 pub struct Message {
     pub provider_msg_id: Option<String>,
     pub contents: Vec<MessageContents>,

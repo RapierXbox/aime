@@ -25,34 +25,36 @@ impl super::GmailRepo {
                 out_of: Some(len),
             });
 
-            match h {
-                History {
-                    labels_added: Some(added),
-                    ..
-                } => {
-                    self.apply_history_labels_added(&mut tx, added).await?;
-                }
-                History {
-                    messages_added: Some(added),
-                    ..
-                } => {
-                    self.apply_history_messages_added(&mut tx, added).await?;
-                }
-                History {
-                    messages_deleted: Some(del),
-                    ..
-                } => {
-                    self.apply_history_messages_deleted(&mut tx, del).await?;
-                }
-                History {
-                    labels_removed: Some(rem),
-                    ..
-                } => {
-                    self.apply_history_labels_removed(&mut tx, rem).await?;
-                }
-                _ => {
-                    error!("did not match history record {h:?}");
-                }
+            if let History {
+                labels_added: Some(added),
+                ..
+            } = h
+            {
+                self.apply_history_labels_added(&mut tx, added).await?;
+            }
+
+            if let History {
+                messages_added: Some(added),
+                ..
+            } = h
+            {
+                self.apply_history_messages_added(&mut tx, added).await?;
+            }
+
+            if let History {
+                messages_deleted: Some(del),
+                ..
+            } = h
+            {
+                self.apply_history_messages_deleted(&mut tx, del).await?;
+            }
+
+            if let History {
+                labels_removed: Some(rem),
+                ..
+            } = h
+            {
+                self.apply_history_labels_removed(&mut tx, rem).await?;
             }
         }
 

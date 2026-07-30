@@ -17,9 +17,20 @@ use crate::{
             AccountConfig, AddLabelStatus, HistoryID, Label, Message, MessageContents,
             MessageSkeleton, MissingField,
         },
+        MailBox,
     },
     AppError, DbPool, Progress,
 };
+
+/// A message stream together with the row count it was opened with.
+///
+/// `total` is a *hint*: it is counted just before the cursor opens, and backfill
+/// workers keep writing to `messages` while the stream drains. Clamp it at the
+/// consumer rather than trusting it to bound `completed`.
+pub struct MessageStream<S> {
+    pub stream: S,
+    pub total: u64,
+}
 
 #[derive(Debug)]
 // TODO: add a with_transaction(|tx| {...})
@@ -105,8 +116,14 @@ impl GmailRepo {
         Ok(())
     }
 
-    pub async fn count_all_messages(&self) -> Result<u64, AppError> {
-        sqlx::query_scalar!(
+    /// All messages of this account, hydrated or not.
+    pub async fn stream_all_messages(
+        &self,
+    ) -> Result<
+        MessageStream<impl futures::Stream<Item = Result<MessageSkeleton, AppError>> + use<'_>>,
+        AppError,
+    > {
+        let total = sqlx::query_scalar!(
             r#"SELECT COUNT(*) as "count!: i64" FROM messages WHERE account_id = ?"#,
             self.account_id
         )
@@ -116,28 +133,10 @@ impl GmailRepo {
         .map_err(|e| {
             error!("failed to count messages: {e:?}");
             AppError::Sqlx(e.into())
-        })
-    }
+        })?;
 
-    pub async fn count_message_skeletons(&self) -> Result<u64, AppError> {
-        sqlx::query_scalar!(
-            r#"SELECT COUNT(*) as "count!: i64" FROM messages WHERE internal_date IS NULL AND account_id = ?"#,
-            self.account_id
-        )
-        .fetch_one(&self.db_pool)
-        .await
-        .map(|c| c as u64)
-        .map_err(|e| {
-            error!("failed to count message skeletons: {e:?}");
-            AppError::Sqlx(e.into())
-        })
-    }
-
-    pub fn stream_all_messages(
-        &self,
-    ) -> impl futures::Stream<Item = Result<MessageSkeleton, AppError>> + use<'_> {
-        sqlx::query!(
-            r#"SELECT provider_msg_id, internal_date IS NULL as "previously_cached!: bool" FROM messages WHERE account_id = ?"#,
+        let stream = sqlx::query!(
+            r#"SELECT provider_msg_id, internal_date IS NOT NULL as "previously_cached!: bool" FROM messages WHERE account_id = ?"#,
             self.account_id
         )
         .fetch(&self.db_pool)
@@ -147,14 +146,32 @@ impl GmailRepo {
                 provider_msg_id: r.provider_msg_id,
                 previously_cached: r.previously_cached,
             })
-        })
+        });
+
+        Ok(MessageStream { stream, total })
     }
 
-    pub fn stream_message_skeletons(
+    /// Messages that were listed but never hydrated (`internal_date IS NULL`).
+    pub async fn stream_message_skeletons(
         &self,
-    ) -> impl futures::Stream<Item = Result<MessageSkeleton, AppError>> + use<'_> {
-        sqlx::query!(
-            r#"SELECT provider_msg_id, internal_date IS NULL as "previously_cached!: bool"
+    ) -> Result<
+        MessageStream<impl futures::Stream<Item = Result<MessageSkeleton, AppError>> + use<'_>>,
+        AppError,
+    > {
+        let total = sqlx::query_scalar!(
+            r#"SELECT COUNT(*) as "count!: i64" FROM messages WHERE internal_date IS NULL AND account_id = ?"#,
+            self.account_id
+        )
+        .fetch_one(&self.db_pool)
+        .await
+        .map(|c| c as u64)
+        .map_err(|e| {
+            error!("failed to count message skeletons: {e:?}");
+            AppError::Sqlx(e.into())
+        })?;
+
+        let stream = sqlx::query!(
+            r#"SELECT provider_msg_id
             FROM messages
             WHERE internal_date IS NULL
                 AND account_id = ?
@@ -166,12 +183,14 @@ impl GmailRepo {
             let r = it?;
             Ok(MessageSkeleton {
                 provider_msg_id: r.provider_msg_id,
-                previously_cached: r.previously_cached,
+                previously_cached: false,
             })
-        })
+        });
+
+        Ok(MessageStream { stream, total })
     }
 
-    /// backfill a message by coalescing all attributes and
+    /// backfill a message by coalescing all attributes and inserting it into the db
     pub async fn backfill_message(&self, msg: Message) -> Result<(), AppError> {
         let mut tx = self.db_pool.begin().await?;
 
@@ -210,7 +229,7 @@ impl GmailRepo {
         .execute(&mut *tx)
         .await
         .map_err(|e| {
-            error!("failed to insert skeleton msg: {e:?}");
+            error!("failed to backfill message row: {e:?}");
             AppError::Sqlx(e.into())
         })?;
 
@@ -264,7 +283,7 @@ impl GmailRepo {
         .execute(tx)
         .await
         .map_err(|e| {
-            error!("failed to insert skeleton msg: {e:?}");
+            error!("failed to insert message contents: {e:?}");
             AppError::Sqlx(e.into())
         })
         .map(|_| ())
@@ -278,7 +297,7 @@ impl GmailRepo {
         .fetch_one(&self.db_pool)
         .await
         .map_err(|e| {
-            error!("failed to insert skeleton msg: {e:?}");
+            error!("failed to read account config: {e:?}");
             AppError::Sqlx(e.into())
         })
         .and_then(|it| {
@@ -291,7 +310,7 @@ impl GmailRepo {
 
     pub async fn set_account_config(&self, config: &AccountConfig) -> Result<(), AppError> {
         let str = serde_json::to_string(config).map_err(|e| {
-            error!("failed to parse account config: {e:?}");
+            error!("failed to serialize account config: {e:?}");
             AppError::from(e)
         })?;
 
@@ -303,14 +322,14 @@ impl GmailRepo {
         .execute(&self.db_pool)
         .await
         .map_err(|e| {
-            error!("failed to insert skeleton msg: {e:?}");
+            error!("failed to write account config: {e:?}");
             AppError::Sqlx(e.into())
         })
         .map(|_| ())
     }
 
     // update the sync cursor for the account config to `to`
-    pub async fn set_account_config_sync_cursor(&self, to: String) -> Result<(), AppError> {
+    pub async fn set_account_config_sync_cursor(&self, to: HistoryID) -> Result<(), AppError> {
         let mut tx = self.db_pool.begin().await?;
 
         let acc = sqlx::query!(
@@ -327,7 +346,7 @@ impl GmailRepo {
 
         let new_config = match config {
             AccountConfig::Gmail { history_id, scopes } => AccountConfig::Gmail {
-                history_id: HistoryID::LastSynced(to),
+                history_id: to,
                 scopes,
             },
         };
@@ -358,11 +377,70 @@ impl GmailRepo {
         .fetch_one(&self.db_pool)
         .await
         .map_err(|e| {
-            error!("in full_sync: db returned error {e:?}");
+            error!("in get_latest_sync_cursor: db returned error {e:?}");
             crate::AppError::Sqlx(e.into())
         })
         .and_then(|it| {
             it.sync_cursor.ok_or(AppError::GmailErr(GmailError::MissingField(MissingField::SyncCursor)))
+        })
+    }
+
+    const PAGE_SIZE: u32 = 100;
+
+    // TODO: return labels? (extra query per message), read status
+    pub async fn list_messages(
+        &self,
+        mailbox: MailBox,
+        page_index: u32,
+    ) -> Result<Vec<Message>, AppError> {
+        sqlx::query!(
+            r#"SELECT ROW_NUMBER() OVER (ORDER BY internal_date DESC) AS "row_num!: i64",
+                m.provider_msg_id,
+                m.size_estimate as "size_estimate: i32",
+                m.thread_id,
+                m.sync_cursor,
+                m.internal_date,
+                m.date_header,
+                m.from_addr,
+                m.to_addrs,
+                m.cc_addrs,
+                m.subject,
+                m.snippet
+            FROM messages AS m
+            JOIN message_has_label AS ml ON ml.provider_msg_id = m.provider_msg_id
+            JOIN labels AS l ON l.id = ml.label_id
+                        WHERE m.account_id = ?
+                AND l.name = ?
+                LIMIT ? OFFSET ?"#,
+            self.account_id,
+            mailbox,
+            Self::PAGE_SIZE,
+            page_index
+        )
+        .fetch_all(&self.db_pool)
+        .await
+        .map_err(|e| {
+            error!("in list_messages: db returned error {e:?}");
+            crate::AppError::Sqlx(e.into())
+        })
+        .map(|it| {
+            it.into_iter()
+                .map(|re| Message {
+                    provider_msg_id: Some(re.provider_msg_id),
+                    label_ids: vec![], // TODO
+                    contents: vec![],
+                    size_estimate: re.size_estimate,
+                    thread_id: re.thread_id,
+                    sync_cursor: re.sync_cursor,
+                    internal_date: re.internal_date,
+                    date_header: re.date_header,
+                    from_addr: re.from_addr,
+                    to_addrs: re.to_addrs,
+                    cc_addrs: re.cc_addrs,
+                    subject: re.subject,
+                    snippet: re.snippet,
+                })
+                .collect()
         })
     }
 }
