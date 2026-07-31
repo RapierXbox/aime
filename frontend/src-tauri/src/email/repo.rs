@@ -164,7 +164,7 @@ impl From<MissingField> for AppError {
     }
 }
 
-#[derive(sqlx::FromRow, Debug)]
+#[derive(sqlx::FromRow, Debug, Type, Serialize, Deserialize)]
 pub struct MessageContents {
     pub provider_msg_id: String,
     pub mime_type: String,
@@ -181,7 +181,7 @@ pub struct MessageSkeleton {
 
 // each field is a message since they are
 // technically nullable in the DB
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Type, Serialize, Deserialize)]
 pub struct Message {
     pub provider_msg_id: Option<String>,
     pub contents: Vec<MessageContents>,
@@ -189,9 +189,10 @@ pub struct Message {
     pub size_estimate: Option<i32>,
 
     // headers:
-    // this is the gmail history id
     pub thread_id: Option<String>,
+    // this is the gmail history id
     pub sync_cursor: Option<String>,
+    #[specta(type = String)]
     pub internal_date: Option<i64>,
     pub date_header: Option<String>,
     pub from_addr: Option<String>,

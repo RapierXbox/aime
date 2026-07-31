@@ -24,7 +24,7 @@ use tokio::sync::Mutex;
 use crate::{
     email::{
         self,
-        gmail::{auth::Auth, GmailApiClient},
+        gmail::{auth::Auth, repo::ListMessages, GmailApiClient},
     },
     AppError, DbPool, Progress,
 };
@@ -32,7 +32,7 @@ use crate::{
 pub mod gmail;
 pub mod repo;
 
-#[derive(Debug, Clone, Serialize, Type, sqlx::Type)]
+#[derive(Debug, Clone, Serialize, Type, sqlx::Type, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
 #[sqlx(type_name = "varchar", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum MailBox {
@@ -210,10 +210,10 @@ pub async fn email_sync(
 #[specta::specta]
 pub async fn list_messages(
     account_id: String,
-    page_index: u32,
     mailbox: MailBox,
+    page_index: u32,
     email_mng: State<'_, EmailManager>,
-) -> Result<Vec<repo::Message>, AppError> {
+) -> Result<ListMessages, AppError> {
     let account_id = account_id
         .parse::<i64>()
         .map_err(|_| crate::AppError::ParseAccountID)?;

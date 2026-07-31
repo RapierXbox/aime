@@ -16,6 +16,8 @@ export const commands = {
 	 */
 	devEmailFullSync: (accountId: string, updateChannel: Channel<Progress>) => typedError<null, AppError>(__TAURI_INVOKE("dev_email_full_sync", { accountId, updateChannel })),
 	emailSync: (accountId: string, updateChannel: Channel<Progress>) => typedError<null, AppError>(__TAURI_INVOKE("email_sync", { accountId, updateChannel })),
+	/**  return a list of message stubs */
+	listMessages: (accountId: string, mailbox: MailBox, pageIndex: number) => typedError<ListMessages, AppError>(__TAURI_INVOKE("list_messages", { accountId, mailbox, pageIndex })),
 };
 
 /* Types */
@@ -34,6 +36,35 @@ export type IoError = "NotFound" | "PermissionDenied" | "AlreadyExists" | "Conne
 export type ListEmailEntry = {
 	id: string,
 	name: string,
+};
+
+export type ListMessages = {
+	messages: Message[],
+	next_page_param: number | null,
+};
+
+export type MailBox = "INBOX" | "SENT" | "DRAFT" | "STARRED" | "TRASH" | "SPAM";
+
+export type Message = {
+	provider_msg_id: string | null,
+	contents: MessageContents[],
+	label_ids: string[],
+	size_estimate: number | null,
+	thread_id: string | null,
+	sync_cursor: string | null,
+	internal_date: string,
+	date_header: string | null,
+	from_addr: string | null,
+	to_addrs: string | null,
+	cc_addrs: string | null,
+	subject: string | null,
+	snippet: string | null,
+};
+
+export type MessageContents = {
+	provider_msg_id: string,
+	mime_type: string,
+	body: string,
 };
 
 export type MissingField = "ThreadId" | "SyncCursor" | "LabelIds" | "InternalDate" | "SizeEstimate" | "DateHeader" | "FromAddr" | "ToAddrs" | "CcAddrs" | "InReplyTo" | "MsgReferences" | "Subject" | "Snippet" | "MsgId" | "Payload" | "Headers" | "InLabel";

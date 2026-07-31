@@ -80,6 +80,8 @@
 }
 
 @theme inline {
+    --text-xxs: 0.625rem;
+    --text-xxs--line-height: 0.875rem;
     --font-sans: "Inter Variable", sans-serif;
     --font-heading: "Space Grotesk Variable", sans-serif;
     --color-sidebar-ring: var(--sidebar-ring);

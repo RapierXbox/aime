@@ -36,7 +36,8 @@ pub fn run() {
             gmail::register_gmail_account,
             email::email_list_accounts,
             email::dev_email_full_sync,
-            email::email_sync
+            email::email_sync,
+            email::list_messages
         ]);
 
     #[cfg(debug_assertions)] // <- Only export on non-release builds

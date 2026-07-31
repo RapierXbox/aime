@@ -62,7 +62,7 @@ function App() {
 
   return (
     <QueryClientProvider client={queryClient}>
-      <SidebarProvider>
+      <SidebarProvider className="h-svh">
         <AppSidebar side="left" className="" />
         <SidebarInset className="min-h-0 overflow-hidden">
           <header
@@ -75,15 +75,31 @@ function App() {
               className="hover:bg-border ml-1"
               color="var(--muted-foreground)"
             />
+            {/* Navigation buttons */}
             <div className="flex flex-row items-center flex-1">
               <button
-              className="p-2 pl-1 hover:bg-border rounded-l-md h-6 flex items-center"
-              aria-label="Previous page"
-              onClick={navigateBack}
-            >
-                {currentPage.page}
-            </button>
+                className="p-2 hover:bg-border rounded-l-md h-6 flex items-center "
+                aria-label="Previous page"
+                onClick={navigateBack}
+              >
+                <ArrowLeft color="var(--muted-foreground)" size={16} />
+              </button>
+              <Separator orientation="vertical" className="h-6" />
+
+              <button
+                className="p-2 hover:bg-border rounded-r-md h-6 flex items-center"
+                aria-label="Next page"
+                onClick={navigateForward}
+              >
+                <ArrowRight color="var(--muted-foreground)" size={16} />
+              </button>
             </div>
+            <span
+              id="currentPage"
+              className="font-heading text-muted-foreground mx-2 select-none ml-auto"
+            >
+              {currentPage.page}
+            </span>
           </header>
           <div className="flex flex-1 min-h-0">{renderPage(currentPage)}</div>
         </SidebarInset>

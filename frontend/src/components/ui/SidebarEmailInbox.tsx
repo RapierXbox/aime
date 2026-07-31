@@ -13,7 +13,7 @@ import {
   SidebarMenuSubButton,
   SidebarMenuSubItem,
 } from "./sidebar";
-import { EMAIL_INBOXES } from "@/lib/utils";
+import { cn, EMAIL_INBOXES } from "@/lib/utils";
 import { Button } from "./button";
 import {
   Collapsible,
@@ -21,12 +21,16 @@ import {
   CollapsibleTrigger,
 } from "./collapsible";
 import { ChevronDown } from "lucide-react";
-import { useNavigationStore } from "@/lib/NavigationStore";
+import { selectCurrentPage, useNavigationStore } from "@/lib/NavigationStore";
 
 const SidebarEmailInbox: React.FC<{
   acc: ListEmailEntry;
 }> = ({ acc }) => {
   const navigateTo = useNavigationStore((state) => state.navigateTo);
+  const curr = useNavigationStore(selectCurrentPage);
+
+  const active =
+    curr.page === "inbox" && curr.accountId === acc.id ? curr.inboxId : null;
 
   return (
     <Collapsible defaultOpen className="group/collapsible">
@@ -43,8 +47,16 @@ const SidebarEmailInbox: React.FC<{
               <SidebarMenuSubButton asChild>
                 <button
                   type="button"
-                  className="w-full cursor-pointer"
-                  onClick={() => navigateTo({page: "inbox", accountId: acc.id, inboxId: it.id})}
+                  className={cn("w-full cursor-pointer", {
+                    "bg-sidebar-accent": active === it.id,
+                  })}
+                  onClick={() =>
+                    navigateTo({
+                      page: "inbox",
+                      accountId: acc.id,
+                      inboxId: it.id,
+                    })
+                  }
                 >
                   <it.icon />
                   {it.name}

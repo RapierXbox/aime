@@ -388,11 +388,15 @@ impl GmailRepo {
     const PAGE_SIZE: u32 = 100;
 
     // TODO: return labels? (extra query per message), read status
+    /// List messages in the mailbox, with pagination via page index.
+    /// Returns at most [`Self::PAGE_SIZE`] messages, offset by `page_index` (=> real offset is `page_index * Self::PAGE_SIZE`).
     pub async fn list_messages(
         &self,
         mailbox: MailBox,
         page_index: u32,
-    ) -> Result<Vec<Message>, AppError> {
+    ) -> Result<ListMessages, AppError> {
+        let page_offset = page_index * Self::PAGE_SIZE;
+
         sqlx::query!(
             r#"SELECT ROW_NUMBER() OVER (ORDER BY internal_date DESC) AS "row_num!: i64",
                 m.provider_msg_id,
@@ -415,7 +419,7 @@ impl GmailRepo {
             self.account_id,
             mailbox,
             Self::PAGE_SIZE,
-            page_index
+            page_offset
         )
         .fetch_all(&self.db_pool)
         .await
@@ -424,23 +428,38 @@ impl GmailRepo {
             crate::AppError::Sqlx(e.into())
         })
         .map(|it| {
-            it.into_iter()
-                .map(|re| Message {
-                    provider_msg_id: Some(re.provider_msg_id),
-                    label_ids: vec![], // TODO
-                    contents: vec![],
-                    size_estimate: re.size_estimate,
-                    thread_id: re.thread_id,
-                    sync_cursor: re.sync_cursor,
-                    internal_date: re.internal_date,
-                    date_header: re.date_header,
-                    from_addr: re.from_addr,
-                    to_addrs: re.to_addrs,
-                    cc_addrs: re.cc_addrs,
-                    subject: re.subject,
-                    snippet: re.snippet,
-                })
-                .collect()
+            ListMessages {
+                next_page_param: if it.len() == Self::PAGE_SIZE as usize {
+                    Some(page_index + 1)
+                } else {
+                    None
+                },
+
+                messages: it
+                    .into_iter()
+                    .map(|re| Message {
+                        provider_msg_id: Some(re.provider_msg_id),
+                        label_ids: vec![], // TODO
+                        contents: vec![],
+                        size_estimate: re.size_estimate,
+                        thread_id: re.thread_id,
+                        sync_cursor: re.sync_cursor,
+                        internal_date: re.internal_date,
+                        date_header: re.date_header,
+                        from_addr: re.from_addr,
+                        to_addrs: re.to_addrs,
+                        cc_addrs: re.cc_addrs,
+                        subject: re.subject,
+                        snippet: re.snippet,
+                    })
+                    .collect(),
+            }
         })
     }
+}
+
+#[derive(Debug, Type, Serialize, Deserialize)]
+pub struct ListMessages {
+    pub messages: Vec<Message>,
+    pub next_page_param: Option<u32>,
 }

@@ -20,7 +20,7 @@ use tauri::ipc::Channel;
 use tauri::State;
 use tokio::{fs::File, io::AsyncWriteExt, stream};
 
-use crate::email::gmail::repo::{GmailRepo, MessageStream};
+use crate::email::gmail::repo::{GmailRepo, ListMessages, MessageStream};
 use crate::email::repo::{Label, Message, MessageSkeleton};
 use crate::email::MailBox;
 use crate::{email, Progress, ProgressReporter};
@@ -676,7 +676,7 @@ impl GmailClient {
         &self,
         mailbox: MailBox,
         page_index: u32,
-    ) -> Result<Vec<email::repo::Message>, AppError> {
+    ) -> Result<ListMessages, AppError> {
         self.repo.list_messages(mailbox, page_index).await
     }
 }
