@@ -6,29 +6,24 @@ use std::{
 
 use base64::prelude::*;
 use base64::Engine;
-use futures::{task, StreamExt};
-use google_gmail1::api::{History, ListHistoryResponse, MessagePartBody};
-use google_gmail1::hyper::{self, client};
+use google_gmail1::api::MessagePartBody;
 use google_gmail1::{
     api::MessagePart,
     hyper_rustls::HttpsConnector,
     hyper_util::client::legacy::connect::{dns::GaiResolver, HttpConnector},
 };
-use log::{error, info};
-use log::{trace, warn};
-use tauri::ipc::Channel;
+use log::error;
+use log::warn;
 use tauri::State;
 use tokio::{fs::File, io::AsyncWriteExt, stream};
 
-use crate::email::gmail::repo::{GmailRepo, ListMessages, MessageStream};
-use crate::email::repo::{Label, Message, MessageSkeleton};
+use crate::email::gmail::repo::{GmailRepo, ListMessages};
+use crate::email::repo::{Label, Message};
 use crate::email::MailBox;
-use crate::{email, Progress, ProgressReporter};
+use crate::email;
 use crate::{
     email::{
-        repo::{
-            AccountConfig, AddLabelStatus, EmailAccount, HistoryID, MessageContents, MissingField,
-        },
+        repo::{AccountConfig, EmailAccount, HistoryID, MessageContents, MissingField},
         EmailManager,
     },
     AppError, DbPool,
@@ -38,6 +33,7 @@ pub type GmailApiClient = google_gmail1::Gmail<HttpsConnector<HttpConnector>>;
 
 pub mod auth;
 pub mod repo;
+mod sync;
 
 pub struct GmailClient {
     client: GmailApiClient,
@@ -79,460 +75,6 @@ impl GmailClient {
     }
     pub fn gmail_client(&self) -> &GmailApiClient {
         &self.client
-    }
-
-    /// Synchronize this GmailClient with the Gmail API,
-    /// follows [https://developers.google.com/workspace/gmail/api/guides/sync]
-    ///
-    /// Either performs a partial sync, or if not possible, a full sync.
-    pub async fn sync(&self, update_channel: Channel<crate::Progress>) -> Result<(), AppError> {
-        update_channel.report(Progress::Update {
-            completed: 0,
-            out_of: Some(3),
-        });
-
-        self.sync_labels().await?;
-
-        update_channel.report(Progress::Update {
-            completed: 1,
-            out_of: Some(3),
-        });
-
-        info!("synced labels");
-
-        let AccountConfig::Gmail { history_id, .. } = self.repo.get_account_config().await?;
-        info!("got account config! history_id: {:?}", history_id);
-
-        match history_id {
-            HistoryID::LastSynced(to) => {
-                info!("performing partial sync");
-
-                let start_history_id = to.parse().map_err(|_| AppError::ParseAccountID)?;
-                let res = self
-                    .partial_sync(start_history_id, update_channel.clone())
-                    .await;
-
-                match res {
-                    Ok(_) => {
-                        info!("partial sync succeeded");
-                        res
-                    }
-
-                    Err(e) => {
-                        // if the partial sync fails, fall back to full sync
-                        error!("partial sync failed: {e:?}, trying full sync");
-                        // self.full_sync(update_channel.clone()).await
-                        todo!()
-                    }
-                }
-            }
-            HistoryID::KnownStale => {
-                info!("history_id is known stale, performing full sync");
-                self.full_sync(update_channel.clone()).await
-            }
-        }
-    }
-
-    async fn partial_sync(
-        &self,
-        start_history_id: u64,
-        updates: Channel<Progress>,
-    ) -> Result<(), crate::AppError> {
-        // first invalidate the sync cursor to avoid failed syncs messing up data
-        self.repo
-            .set_account_config_sync_cursor(HistoryID::KnownStale)
-            .await?;
-
-        let res = self
-            .client
-            .users()
-            .history_list("me")
-            .start_history_id(start_history_id)
-            .doit()
-            .await;
-
-        updates.report(Progress::Update {
-            completed: 2,
-            out_of: Some(4),
-        });
-
-        match res {
-            Err(e) => match e {
-                // on 404, we need to perform a full_sync
-                google_gmail1::Error::Failure(res)
-                    if res.status() == hyper::StatusCode::NOT_FOUND =>
-                {
-                    warn!("got a 404 {res:?} on users.history.list. Performing full sync");
-                    return Err(AppError::GmailResponseIncomplete);
-                }
-                _ => return Err(e.into()),
-            },
-
-            // no updates since the last sync
-            Ok((
-                _,
-                ListHistoryResponse {
-                    history: None,
-                    history_id: Some(history_id_new),
-                    ..
-                },
-            )) => {
-                updates.report(Progress::Update {
-                    completed: 3,
-                    out_of: Some(3),
-                });
-
-                info!("got empty history list, completing!");
-                self.repo
-                    .set_account_config_sync_cursor(HistoryID::LastSynced(
-                        history_id_new.to_string(),
-                    ))
-                    .await?;
-                return Ok(());
-            }
-
-            // got some history, apply it
-            Ok((
-                _,
-                ListHistoryResponse {
-                    history: Some(history),
-                    history_id: Some(history_id_new),
-                    next_page_token,
-                    ..
-                },
-            )) => {
-                self.apply_partial_sync_history(
-                    start_history_id,
-                    updates.clone(),
-                    history,
-                    history_id_new,
-                    next_page_token,
-                )
-                .await?;
-            }
-
-            Ok((d, r)) => {
-                error!("got messages.list response, didnt match correctly! r={r:#?}");
-                return Err(crate::AppError::GmailResponseIncomplete);
-            }
-        }
-
-        // the added messages need to be loaded
-        self.backfill_messages(self.repo.stream_message_skeletons().await?, updates)
-            .await?;
-
-        Ok(())
-    }
-
-    async fn apply_partial_sync_history(
-        &self,
-        start_history_id: u64,
-        updates: Channel<Progress>,
-        history: Vec<History>,
-        history_id_new: u64,
-        next_page_token: Option<String>,
-    ) -> Result<(), AppError> {
-        // update the history we already have
-        self.repo.apply_history(history, updates.clone()).await?;
-        // next up, check if there are more pages to fetch
-
-        let mut running_page_token = next_page_token;
-        while let Some(ref token) = running_page_token {
-            info!(
-                "incr sync res_history_id={history_id_new}, target={start_history_id} page 1 done"
-            );
-
-            let (_, res) = self
-                .client
-                .users()
-                .history_list("me")
-                .page_token(token)
-                // use the history_id from the request response
-                .start_history_id(start_history_id)
-                .doit()
-                .await?;
-
-            match res {
-                ListHistoryResponse {
-                    history: Some(paged_history),
-                    next_page_token,
-                    ..
-                } => {
-                    self.repo
-                        .apply_history(paged_history, updates.clone())
-                        .await?;
-                    running_page_token = next_page_token;
-                }
-
-                ListHistoryResponse {
-                    history: None,
-                    history_id: Some(history_id_finished),
-                    ..
-                } => {
-                    self.backfill_messages(
-                        self.repo.stream_message_skeletons().await?,
-                        updates.clone(),
-                    )
-                    .await?;
-
-                    self.repo
-                        .set_account_config_sync_cursor(email::repo::HistoryID::LastSynced(
-                            history_id_finished.to_string(),
-                        ))
-                        .await?;
-
-                    return Ok(());
-                }
-
-                _ => return Err(crate::AppError::GmailResponseIncomplete),
-            }
-        }
-
-        info!("finished partial sync to {history_id_new}");
-        self.repo
-            .set_account_config_sync_cursor(email::repo::HistoryID::LastSynced(
-                history_id_new.to_string(),
-            ))
-            .await?;
-
-        Ok(())
-    }
-
-    // https://developers.google.com/workspace/gmail/api/guides/sync#full-sync
-    // todo: return u64
-    // TODO: this misses deleted messages since the fetch_and_store_skeletons doesnt delete records that werent touched
-    pub async fn full_sync(&self, updates: Channel<Progress>) -> Result<(), crate::AppError> {
-        // TODO: include spam/trash? decide: lazy sync inboxes?
-
-        self.fetch_and_store_message_skeletons(updates.clone())
-            .await?;
-
-        // refetch all messages
-        self.backfill_messages(self.repo.stream_all_messages().await?, updates.clone())
-            .await?;
-
-        info!(
-            "full_sync: finished backfilling all messages for account_id={}",
-            self.account_id
-        );
-        // todo: should be the the first message in the messages.list response
-        let latest_history_id = self.repo.get_latest_sync_cursor().await?;
-        let config = self.repo.get_account_config().await?;
-
-        let AccountConfig::Gmail { scopes, .. } = config;
-
-        let new_config = AccountConfig::Gmail {
-            history_id: HistoryID::LastSynced(latest_history_id),
-            scopes,
-        };
-
-        info!(
-            "full sync: updated account config account_id={}, new config={new_config:?}",
-            self.account_id
-        );
-
-        self.repo.set_account_config(&new_config).await?;
-
-        Ok(())
-    }
-
-    /// labels are used for sorting messages into inboxes as well as user defined labels
-    /// this function refetches the user's available labels and (will) invalidate the frontend labels query
-    async fn sync_labels(&self) -> Result<(), crate::AppError> {
-        // list the labels from the gmail api
-        let (_, res) = self
-            .client
-            .users()
-            .labels_list("me")
-            .doit()
-            .await
-            .map_err(|e| {
-                error!("failed to list labels: {e:?}");
-                GmailApiError::from(e)
-            })?;
-
-        let Some(labels) = res.labels else {
-            error!("gmail sync no labels returned");
-            return Err(crate::AppError::GmailMissingLabels);
-        };
-
-        let mut label_status = AddLabelStatus::AlreadyExists;
-        for label in labels {
-            // extract the required fields
-            let google_gmail1::api::Label {
-                id: Some(id),
-                name: Some(name),
-                message_list_visibility,
-                label_list_visibility,
-                type_: Some(type_),
-                ..
-            } = label
-            else {
-                error!("label missing required fields: {:?}", label);
-                return Err(AppError::from(GmailError::MissingField(
-                    MissingField::InLabel,
-                )));
-            };
-
-            let status = self
-                .repo
-                .add_label(Label {
-                    id,
-                    name,
-                    message_list_visibility,
-                    label_list_visibility,
-                    type_,
-                })
-                .await?;
-
-            if matches!(status, AddLabelStatus::Inserted) {
-                label_status = AddLabelStatus::Inserted;
-            }
-        }
-
-        if matches!(label_status, AddLabelStatus::Inserted) {
-            info!("New Label was added");
-            // TODO: invalidate frontend labels
-        }
-
-        Ok(())
-    }
-
-    async fn backfill_messages(
-        &self,
-        msgs: MessageStream<impl futures::Stream<Item = Result<MessageSkeleton, AppError>>>,
-        updates: Channel<Progress>,
-    ) -> Result<(), AppError> {
-        let MessageStream { stream, total } = msgs;
-
-        info!(
-            "starting backfill for account_id={} n_messages={total}",
-            self.account_id
-        );
-
-        let completed = std::sync::atomic::AtomicU64::new(0);
-
-        // fetch the messages in parallel and load them into the db
-        stream
-            .map(|it| async {
-                let s = match it {
-                    Ok(s) => s,
-                    Err(e) => return error!("failed to read message skeleton: {e:?}"),
-                };
-
-                // gather message id for better logging
-                let id = s.provider_msg_id.clone();
-
-                if let Err(e) = self.fetch_and_store_skeleton(s).await {
-                    error!("failed to load message id={id}: {e:?}");
-                }
-            })
-            .buffer_unordered(Self::N_FETCH_WORKERS)
-            .for_each(|()| {
-                let n = completed.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                updates.report(Progress::Update {
-                    completed: n,
-                    out_of: Some(total.max(n)),
-                });
-
-                async move {}
-            })
-            .await;
-
-        Ok(())
-    }
-
-    /// fetch, parse and store a single message, backfilling a message skeleton
-    /// this may also update the labelIds of a previously cached message
-    async fn fetch_and_store_skeleton(&self, s: MessageSkeleton) -> Result<(), crate::AppError> {
-        let (_, msg) = self
-            .client
-            .users()
-            .messages_get("me", &s.provider_msg_id)
-            .format(if s.previously_cached {
-                "minimal"
-            } else {
-                "full"
-            })
-            .doit()
-            .await?;
-
-        let message = Self::parse_message(msg)?;
-
-        self.repo.backfill_message(message).await
-    }
-
-    /// Synchronize and store the message skeletons from users.messages.list
-    async fn fetch_and_store_message_skeletons(
-        &self,
-        progress: Channel<Progress>,
-    ) -> Result<(), AppError> {
-        // https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/list
-        // list the first 500 messages
-        let (b, res) = self
-            .client
-            .users()
-            .messages_list("me")
-            .include_spam_trash(true)
-            .max_results(500)
-            .doit()
-            .await
-            .map_err(|e| {
-                error!("failed to list messages: {e:#?}");
-                GmailApiError::from(e)
-            })?;
-
-        let Some(messages) = &res.messages else {
-            error!("messages_list returned no messages field {b:#?}");
-            return Err(crate::AppError::GmailResponseIncomplete);
-        };
-
-        self.repo.insert_skeleton_messages(&messages).await?;
-
-        let mut next_page_token = res.next_page_token;
-        // until no new page token is returned,
-        let mut id = 1;
-        while let Some(token) = next_page_token {
-            id += 1;
-            progress.report(Progress::Update {
-                completed: id,
-                out_of: Some(10.max(id + 2)),
-            });
-
-            info!("fetching messages page token={token}");
-
-            // fetch the next 500 results
-            let (b, res) = self
-                .client
-                .users()
-                .messages_list("me")
-                .include_spam_trash(true)
-                .max_results(500)
-                .page_token(&token)
-                .doit()
-                .await
-                .map_err(|e| {
-                    error!("failed to list messages: {e:#?}");
-                    GmailApiError::from(e)
-                })?;
-
-            let Some(messages) = &res.messages else {
-                error!("messages_list returned no messages field {b:#?}");
-                return Err(crate::AppError::GmailResponseIncomplete);
-            };
-
-            // and insert them into the table to be stored later
-            self.repo.insert_skeleton_messages(&messages).await?;
-
-            next_page_token = res.next_page_token;
-        }
-
-        trace!(
-            "full_sync: finished listing all messages for account_id={}",
-            self.account_id
-        );
-
-        Ok(())
     }
 
     // parses a single message from the Gmail API into a [`Message`] struct
@@ -828,4 +370,33 @@ pub async fn register_gmail_account(
     );
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_message_full_payload_with_parts() {}
+
+    #[test]
+    fn parse_message_minimal_format() {}
+
+    #[test]
+    fn parse_message_missing_headers_errors() {}
+
+    #[test]
+    fn parse_message_missing_id_errors() {}
+
+    #[test]
+    fn parse_mime_leaf_text_plain_ok() {}
+
+    #[test]
+    fn parse_mime_leaf_unsupported_mime_type_errors() {}
+
+    #[test]
+    fn parse_mime_leaf_invalid_utf8_errors() {}
+
+    #[test]
+    fn parse_mime_leaf_not_a_leaf_errors() {}
 }

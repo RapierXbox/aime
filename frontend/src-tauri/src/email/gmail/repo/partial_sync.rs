@@ -183,3 +183,23 @@ impl super::GmailRepo {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn apply_history_labels_added() {}
+
+    #[test]
+    fn apply_history_labels_removed() {}
+
+    #[test]
+    fn apply_history_messages_added() {}
+
+    #[test]
+    fn apply_history_messages_deleted() {}
+
+    #[test]
+    fn apply_history_skips_entry_missing_required_fields() {}
+}

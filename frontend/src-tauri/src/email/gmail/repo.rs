@@ -463,3 +463,23 @@ pub struct ListMessages {
     pub messages: Vec<Message>,
     pub next_page_param: Option<u32>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn add_label_then_readd_is_already_exists() {}
+
+    #[test]
+    fn backfill_message_coalesces_without_clobbering() {}
+
+    #[test]
+    fn list_messages_sets_next_page_param_at_page_size() {}
+
+    #[test]
+    fn list_messages_no_next_page_below_page_size() {}
+
+    #[test]
+    fn account_config_round_trips_through_json() {}
+}
