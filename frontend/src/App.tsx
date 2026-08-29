@@ -1,4 +1,5 @@
-import { useEffect, type ReactNode } from "react";
+/* eslint-disable @typescript-eslint/no-unused-vars */
+import { useEffect, useState, type ReactNode } from "react";
 import "./App.css";
 
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -27,13 +28,16 @@ function App() {
   // der tanstack query client
   // because the server actively invalidates the cache, we can set a longeer (theoretically infinite)
   // stale time to avoid unnecessary refetches
-  const queryClient = new QueryClient({
-    defaultOptions: {
-      queries: {
-        staleTime: 10000,
-      },
-    },
-  });
+  const [queryClient, _] = useState(
+    () =>
+      new QueryClient({
+        defaultOptions: {
+          queries: {
+            staleTime: 10000,
+          },
+        },
+      }),
+  );
 
   // für automatischen dark/light mode
   // TODO: change in settings

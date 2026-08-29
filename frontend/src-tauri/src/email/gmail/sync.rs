@@ -42,6 +42,7 @@ impl GmailClient {
                 info!("performing partial sync");
 
                 let start_history_id = to.parse().map_err(|_| AppError::ParseAccountID)?;
+
                 let res = self
                     .partial_sync(start_history_id, update_channel.clone())
                     .await;
@@ -64,6 +65,15 @@ impl GmailClient {
                 self.full_sync(update_channel.clone()).await
             }
         };
+
+        update_channel.report_message(
+            if res.is_ok() {
+                "Finished Sync"
+            } else {
+                "Failed Sync"
+            }
+            .into(),
+        );
 
         res
     }

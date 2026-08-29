@@ -13,7 +13,7 @@ impl GmailClient {
     pub async fn full_sync(&self, updates: Channel<Progress>) -> Result<(), AppError> {
         // TODO: include spam/trash? decide: lazy sync inboxes?
 
-        updates.report_message("Fetching Emails".into());
+        updates.report_message("Full Sync: Fetching Emails".into());
         self.fetch_and_store_message_skeletons(updates.clone())
             .await?;
 
@@ -93,7 +93,7 @@ impl GmailClient {
                 .messages_list("me")
                 .include_spam_trash(true)
                 .max_results(500)
-                .page_token(&token)
+                .page_token(&token) 
                 .doit()
                 .await
                 .map_err(|e| {
@@ -102,8 +102,12 @@ impl GmailClient {
                 })?;
 
             let Some(messages) = &res.messages else {
-                error!("messages_list returned no messages field {b:#?}");
-                return Err(AppError::GmailResponseIncomplete);
+                error!("messages_list returned no messages field {b:#?} {res:#?}",);
+                if res.next_page_token.is_none() {
+                    break;
+                } else {
+                    return Err(AppError::GmailResponseIncomplete);
+                }
             };
 
             // and insert them into the table to be stored later

@@ -19,6 +19,12 @@ impl GmailClient {
             .set_account_config_sync_cursor(HistoryID::KnownStale)
             .await?;
 
+        updates.report_message("Applying History Changes".into());
+        updates.report(Progress::Update {
+            completed: 1,
+            out_of: Some(4),
+        });
+
         let res = self
             .client
             .users()

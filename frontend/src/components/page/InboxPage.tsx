@@ -64,7 +64,7 @@ const displayName = (addr: string) =>
 const EmailPreview: React.FC<{
   message: Message;
 }> = ({ message }) => {
-  const parsed = new Date(message.date_header);
+  const parsed = message.date_header && new Date(message.date_header);
 
   return (
     <div className="px-2 py-1">
