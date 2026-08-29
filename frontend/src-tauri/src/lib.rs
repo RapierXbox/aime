@@ -62,11 +62,22 @@ fn setup(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
         app.handle().plugin(
             tauri_plugin_log::Builder::default()
                 .level(log::LevelFilter::Info)
+                .format(|out, message, record| {
+                    out.finish(format_args!(
+                        "[{} {} {} {}:{}] {}",
+                        chrono::Local::now().format("%H:%M:%S%.3f"),
+                        record.level(),
+                        record.target(),
+                        record.file().unwrap_or("?"),
+                        record.line().unwrap_or(0),
+                        message
+                    ))
+                })
                 .build(),
         )?;
     }
 
-    // -- db setup
+    // --- db setup
     let sqlx_dir = app.path().app_data_dir()?.join("aime.sqlite");
     if let Some(parent) = sqlx_dir.parent() {
         fs::create_dir_all(parent)?;
@@ -74,7 +85,7 @@ fn setup(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     let path_str = sqlx_dir.to_str().ok_or(AppError::MissingDbPath)?;
     debug!("db_path={path_str:?}");
 
-    // connect_lazy braucht ein async context, daher block_on
+    // connect_lazy needs an async context
     let pres: Result<_, AppError> = async_runtime::block_on(async {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .acquire_timeout(Duration::from_secs(5))

@@ -114,40 +114,7 @@ impl GmailClient {
             return Err(GmailError::MissingField(MissingField::MsgId).into());
         };
 
-        // TODO: implement tree-walking for this,
-        // currently only supports one layer of container mesages
-        let contents: Vec<MessageContents> = match payload {
-            // container MIME message part
-            // assumes all children are leafs
-            MessagePart {
-                parts: Some(parts),
-                headers,
-                ..
-            } => parts
-                .into_iter()
-                .map(|it| Self::parse_mime_leaf(it, msg_id.clone()))
-                .filter_map(|it| match it {
-                    Ok(v) => Some(v),
-                    Err(e) => {
-                        error!("skipping message part inside msg_id={msg_id} err={e:?}");
-                        None
-                    }
-                })
-                .collect::<Vec<MessageContents>>(),
-
-            // this arm conflates valid, single container parts with parts we cannot parse yet
-            // this currently skips deeply nested mime trees for example.
-            _ => {
-                let contents = Self::parse_mime_leaf(payload, msg_id.clone());
-                match contents {
-                    Err(e) => {
-                        error!("skipped parsing content for msg_id={} due to {e:?}", msg_id);
-                        vec![]
-                    }
-                    Ok(res) => vec![res],
-                }
-            }
-        };
+        let contents = Self::collect_mime_leaves(payload, &msg_id);
 
         let sync_cursor = msg.history_id.map(|id| id.to_string());
         let thread_id = msg.thread_id;
@@ -175,6 +142,22 @@ impl GmailClient {
             provider_msg_id: msg.id,
             size_estimate: msg.size_estimate,
         })
+    }
+
+    /// Recursively walks a MIME part tree, collecting every leaf that parses.
+    /// Container parts (`parts: Some(_)`) recurse; anything else is tried as a leaf.
+    fn collect_mime_leaves(part: MessagePart, msg_id: &str) -> Vec<MessageContents> {
+        match part.parts {
+            Some(children) => children
+                .into_iter()
+                .flat_map(|child| Self::collect_mime_leaves(child, msg_id))
+                .collect(),
+
+            None => Self::parse_mime_leaf(part, msg_id.to_string())
+                .inspect_err(|e| error!("skipping message part inside msg_id={msg_id} err={e:?}"))
+                .into_iter()
+                .collect(),
+        }
     }
 
     /// If the MessagePart is a leaf part, parse into MessageContents
@@ -374,29 +357,216 @@ pub async fn register_gmail_account(
 
 #[cfg(test)]
 mod tests {
+    use google_gmail1::api::{Message as GMessage, MessagePartHeader};
+
     use super::*;
 
-    #[test]
-    fn parse_message_full_payload_with_parts() {}
+    fn leaf(mime_type: &str, data: Option<Vec<u8>>) -> MessagePart {
+        MessagePart {
+            mime_type: Some(mime_type.into()),
+            body: Some(MessagePartBody {
+                data,
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
 
     #[test]
-    fn parse_message_minimal_format() {}
+    fn parse_mime_leaf_invariants() {
+        struct Case {
+            name: &'static str,
+            part: MessagePart,
+            expect_ok: bool,
+        }
+
+        let cases = [
+            Case {
+                name: "text/plain is accepted",
+                part: leaf("text/plain", Some(b"hello".to_vec())),
+                expect_ok: true,
+            },
+            Case {
+                name: "text/html is accepted",
+                part: leaf("text/html", Some(b"<p>hi</p>".to_vec())),
+                expect_ok: true,
+            },
+            Case {
+                name: "unsupported mime type is rejected",
+                part: leaf("image/png", Some(vec![1, 2, 3])),
+                expect_ok: false,
+            },
+            Case {
+                name: "invalid utf8 body is rejected",
+                part: leaf("text/plain", Some(vec![0xff, 0xfe])),
+                expect_ok: false,
+            },
+            Case {
+                name: "missing body is not a leaf",
+                part: MessagePart {
+                    mime_type: Some("text/plain".into()),
+                    body: None,
+                    ..Default::default()
+                },
+                expect_ok: false,
+            },
+            Case {
+                name: "missing body.data is not a leaf",
+                part: leaf("text/plain", None),
+                expect_ok: false,
+            },
+            Case {
+                name: "missing mime_type is not a leaf",
+                part: MessagePart {
+                    mime_type: None,
+                    body: Some(MessagePartBody {
+                        data: Some(b"hello".to_vec()),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+                expect_ok: false,
+            },
+            Case {
+                name: "container part (has sub-parts) is not a leaf",
+                part: MessagePart {
+                    parts: Some(vec![leaf("text/plain", Some(b"hi".to_vec()))]),
+                    ..Default::default()
+                },
+                expect_ok: false,
+            },
+        ];
+
+        for c in cases {
+            let result = GmailClient::parse_mime_leaf(c.part, "msg1".into());
+            assert_eq!(result.is_ok(), c.expect_ok, "case failed: {}", c.name);
+        }
+    }
 
     #[test]
-    fn parse_message_missing_headers_errors() {}
+    fn parse_message_invariants() {
+        struct Case {
+            name: &'static str,
+            msg: GMessage,
+            expect_ok: bool,
+        }
+
+        let full_payload = MessagePart {
+            headers: Some(vec![MessagePartHeader {
+                name: Some("Subject".into()),
+                value: Some("hi".into()),
+            }]),
+            ..leaf("text/plain", Some(b"body".to_vec()))
+        };
+
+        let cases = [
+            Case {
+                name: "full payload with headers parses",
+                msg: GMessage {
+                    id: Some("m1".into()),
+                    payload: Some(full_payload.clone()),
+                    ..Default::default()
+                },
+                expect_ok: true,
+            },
+            Case {
+                name: "payload with nested parts parses",
+                msg: GMessage {
+                    id: Some("m1".into()),
+                    payload: Some(MessagePart {
+                        headers: Some(vec![]),
+                        parts: Some(vec![leaf("text/plain", Some(b"a".to_vec()))]),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+                expect_ok: true,
+            },
+            Case {
+                name: "minimal format (no payload) with id + labels parses",
+                msg: GMessage {
+                    id: Some("m1".into()),
+                    label_ids: Some(vec!["INBOX".into()]),
+                    payload: None,
+                    ..Default::default()
+                },
+                expect_ok: true,
+            },
+            Case {
+                name: "no payload and no id/labels errors",
+                msg: GMessage {
+                    payload: None,
+                    ..Default::default()
+                },
+                expect_ok: false,
+            },
+            Case {
+                name: "no payload with id but no labels errors",
+                msg: GMessage {
+                    id: Some("m1".into()),
+                    label_ids: None,
+                    payload: None,
+                    ..Default::default()
+                },
+                expect_ok: false,
+            },
+            Case {
+                name: "payload without headers errors",
+                msg: GMessage {
+                    id: Some("m1".into()),
+                    payload: Some(MessagePart {
+                        headers: None,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+                expect_ok: false,
+            },
+            Case {
+                name: "payload+headers but missing message id errors",
+                msg: GMessage {
+                    id: None,
+                    payload: Some(full_payload.clone()),
+                    ..Default::default()
+                },
+                expect_ok: false,
+            },
+        ];
+
+        for c in cases {
+            let result = GmailClient::parse_message(c.msg);
+            assert_eq!(result.is_ok(), c.expect_ok, "case failed: {}", c.name);
+        }
+    }
 
     #[test]
-    fn parse_message_missing_id_errors() {}
+    fn parse_message_walks_nested_mime_tree() {
+        let nested_container = MessagePart {
+            mime_type: Some("multipart/alternative".into()),
+            parts: Some(vec![
+                leaf("text/plain", Some(b"plain body".to_vec())),
+                leaf("text/html", Some(b"<p>html body</p>".to_vec())),
+            ]),
+            ..Default::default()
+        };
 
-    #[test]
-    fn parse_mime_leaf_text_plain_ok() {}
+        let msg = GMessage {
+            id: Some("m1".into()),
+            payload: Some(MessagePart {
+                mime_type: Some("multipart/mixed".into()),
+                headers: Some(vec![]),
+                parts: Some(vec![nested_container]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
 
-    #[test]
-    fn parse_mime_leaf_unsupported_mime_type_errors() {}
-
-    #[test]
-    fn parse_mime_leaf_invalid_utf8_errors() {}
-
-    #[test]
-    fn parse_mime_leaf_not_a_leaf_errors() {}
+        let parsed = GmailClient::parse_message(msg).expect("message should parse");
+        assert_eq!(
+            parsed.contents.len(),
+            2,
+            "expected both nested leaf parts to survive tree-walking, got {:?}",
+            parsed.contents
+        );
+    }
 }
