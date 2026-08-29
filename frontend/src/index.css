@@ -38,7 +38,7 @@
     --sidebar-foreground: oklch(0.141 0.005 285.823);
     --sidebar-primary: oklch(0.669 0.068 179);
     --sidebar-primary-foreground: oklch(0.984 0.014 180.72);
-    --sidebar-accent: oklch(0.967 0.001 286.375);
+    --sidebar-accent: var(--border);
     --sidebar-accent-foreground: oklch(0.21 0.006 285.885);
     --sidebar-border: oklch(0.92 0.004 286.32);
     --sidebar-ring: oklch(0.705 0.015 286.067);
@@ -70,16 +70,18 @@
     --chart-4: oklch(0.37 0.013 285.805);
     --chart-5: oklch(0.274 0.006 286.033);
     --sidebar: var(--muted);
-    --sidebar-foreground: var(--muted);
+    --sidebar-foreground: oklch(0.985 0 0);
     --sidebar-primary: oklch(0.669 0.068 179);
     --sidebar-primary-foreground: oklch(0.277 0.046 192.524);
-    --sidebar-accent: oklch(0.274 0.006 286.033);
+    --sidebar-accent: var(--border);
     --sidebar-accent-foreground: oklch(0.985 0 0);
     --sidebar-border: oklch(1 0 0 / 10%);
     --sidebar-ring: oklch(0.552 0.016 285.938);
 }
 
 @theme inline {
+    --text-xxs: 0.625rem;
+    --text-xxs--line-height: 0.875rem;
     --font-sans: "Inter Variable", sans-serif;
     --font-heading: "Space Grotesk Variable", sans-serif;
     --color-sidebar-ring: var(--sidebar-ring);
@@ -121,6 +123,28 @@
     --radius-2xl: calc(var(--radius) * 1.8);
     --radius-3xl: calc(var(--radius) * 2.2);
     --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+@keyframes text-shimmer {
+    from {
+        background-position: 150% center;
+    }
+
+    to {
+        background-position: -50% center;
+    }
+}
+
+.text-shimmer {
+    background-image: linear-gradient(90deg,
+            var(--muted-foreground) 40%,
+            var(--foreground) 50%,
+            var(--muted-foreground) 60%);
+    background-size: 200% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    animation: text-shimmer 1s linear infinite;
 }
 
 @layer base {

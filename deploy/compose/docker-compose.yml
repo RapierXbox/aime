@@ -17,7 +17,7 @@ services:
       retries: 10
     ports:
       - "127.0.0.1:${POSTGRES_PORT:-5432}:5432" # local debugging only
-    
+
   backend:
     build:
       context: ../../backend
@@ -51,7 +51,7 @@ services:
       - prometheus-data:/prometheus
     expose:
       - "9090" # internal only
-  
+
   grafana:
     image: grafana/grafana:latest
     profiles: ["monitoring"]
@@ -66,7 +66,7 @@ services:
       - grafana-data:/var/lib/grafana
     ports:
       - "127.0.0.1:3000:3000" # localhost only in base
-    
+
 volumes:
   db-data:
   prometheus-data:

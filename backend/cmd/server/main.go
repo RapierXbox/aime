@@ -41,4 +41,8 @@ func main() {
 	if err != nil {
 		log.Printf("ERROR running DB migrations: %s", err.Error())
 	}
+
+	for {
+
+	}
 }

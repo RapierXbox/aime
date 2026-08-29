@@ -20,7 +20,8 @@ const LoginPage: React.FC = () => {
     (section) => section.id === currentSection,
   )?.component;
 
-  if (!CurrSectionComponent) throw new Error(`Invalid settings section: ${currentSection}`);
+  if (!CurrSectionComponent)
+    throw new Error(`Invalid settings section: ${currentSection}`);
 
   return (
     <div className="flex flex-1 min-h-0">
@@ -43,8 +44,10 @@ const LoginPage: React.FC = () => {
         ))}
       </div>
       <Separator orientation="vertical" className="" />
-      <div id="content" className="flex-1 p-2 overflow-y-scroll">
-        <CurrSectionComponent />
+      <div className="flex flex-1 p-2 overflow-y-scroll flex-col items-center">
+        <div id="content" className="w-full max-w-[80ch]">
+          <CurrSectionComponent />
+        </div>
       </div>
     </div>
   );
@@ -56,13 +59,13 @@ const SECTIONS: {
   component: React.FC;
   icon: React.FC<LucideProps>;
 }[] = [
-    {
-      name: "Application",
-      id: "application",
-      component: ApplicationSection,
-      icon: LaptopMinimal,
-    },
-    { name: "Account", id: "account", component: AccountSection, icon: User },
-  ];
+  {
+    name: "Application",
+    id: "application",
+    component: ApplicationSection,
+    icon: LaptopMinimal,
+  },
+  { name: "Account", id: "account", component: AccountSection, icon: User },
+];
 
 export default LoginPage;

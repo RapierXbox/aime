@@ -4,13 +4,28 @@ import {
   Sidebar,
   SidebarContent,
   SidebarFooter,
+  SidebarGroup,
   SidebarHeader,
+  SidebarMenu,
   SidebarRail,
 } from "@/components/ui/sidebar";
 import { Separator } from "@/components/ui/separator";
 import { useNavigationStore } from "@/lib/NavigationStore";
+import { useQuery } from "@tanstack/react-query";
+import { commands } from "@/bindings";
+import SidebarEmailInbox from "./SidebarEmailInbox";
+import { qk } from "@/lib/queryKeys";
 
 export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
+  const email_accs = useQuery({
+    queryKey: qk.accounts,
+    queryFn: () =>
+      commands.emailListAccounts().then((it) => {
+        if (it.status === "error") throw it.error;
+        return it.data;
+      }),
+  });
+
   const navigateTo = useNavigationStore((state) => state.navigateTo);
 
   return (
@@ -23,7 +38,15 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
           AiMe
         </button>
       </SidebarHeader>
-      <SidebarContent></SidebarContent>
+      <SidebarContent>
+        <SidebarGroup>
+          <SidebarMenu>
+            {email_accs.data?.map((it) => (
+              <SidebarEmailInbox acc={it} key={it.id} />
+            ))}
+          </SidebarMenu>
+        </SidebarGroup>
+      </SidebarContent>
       <Separator />
       <SidebarFooter>
         <SidebarUser />
