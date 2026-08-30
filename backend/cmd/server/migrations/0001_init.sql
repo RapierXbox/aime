@@ -45,7 +45,7 @@ CREATE TABLE usage_events (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE TABLE backup (
+CREATE TABLE backups (
     id BIGSERIAL PRIMARY KEY,
     account_id BIGINT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
     version INTEGER NOT NULL,
@@ -56,6 +56,17 @@ CREATE TABLE backup (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE INDEX ON devices (account_id);
+CREATE INDEX ON auth_challanges (device_id) WHERE NOT used;
+CREATE INDEX ON sessions (account_id);
+CREATE INDEX ON usage_events (account_id, created_at DESC);
+CREATE UNIQUE INDEX ON backup (account_id, version);
+
 -- +goose Down
-DROP TABLE backups; DROP TABLE usage_events; DROP TABLE sessions; DROP TABLE auth_challanges; DROP TABLE devices; DROP TABLE accounts
--- completly freestyld of the dome.. num of changes made: its 7 now
+DROP TABLE backups; 
+DROP TABLE usage_events; 
+DROP TABLE sessions; 
+DROP TABLE auth_challanges; 
+DROP TABLE devices; 
+DROP TABLE accounts;
+-- completly freestyld of the dome.. num of changes made: its 8 now
