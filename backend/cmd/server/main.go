@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"embed"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
 	"github.com/rapierxbox/aime/backend/internal/config"
+	"github.com/rapierxbox/aime/backend/internal/store"
 )
 
 //go:embed migrations/*.sql
@@ -41,4 +43,11 @@ func main() {
 	if err != nil {
 		log.Printf("ERROR running DB migrations: %s", err.Error())
 	}
+
+	log.Print("Connecting to Postgres...")
+	store, err := store.Open(context.TODO(), config.DatabaseURL)
+	if err != nil {
+		log.Fatalf("FATAL ERROR connecting to db pool: %s", err.Error())
+	}
+	defer store.Close()
 }
