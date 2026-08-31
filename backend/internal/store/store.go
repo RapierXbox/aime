@@ -20,4 +20,8 @@ func Open(ctx context.Context, url string) (*Store, error) {
 	return &Store{pool: pool}, nil
 }
 
+func (s *Store) Ping(ctx context.Context) error {
+	return s.pool.Ping(ctx)
+}
+
 func (s *Store) Close() { s.pool.Close() }

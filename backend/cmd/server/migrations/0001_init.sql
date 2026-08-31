@@ -60,7 +60,7 @@ CREATE INDEX ON devices (account_id);
 CREATE INDEX ON auth_challanges (device_id) WHERE NOT used;
 CREATE INDEX ON sessions (account_id);
 CREATE INDEX ON usage_events (account_id, created_at DESC);
-CREATE UNIQUE INDEX ON backup (account_id, version);
+CREATE UNIQUE INDEX ON backups (account_id, version);
 
 -- +goose Down
 DROP TABLE backups; 
@@ -69,4 +69,4 @@ DROP TABLE sessions;
 DROP TABLE auth_challanges; 
 DROP TABLE devices; 
 DROP TABLE accounts;
--- completly freestyld of the dome.. num of changes made: its 8 now
+-- completly freestyld of the dome.. num of changes made: its 9 now
