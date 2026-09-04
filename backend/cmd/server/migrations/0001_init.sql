@@ -2,6 +2,8 @@
 CREATE TABLE accounts (
     id BIGSERIAL PRIMARY KEY,
     email TEXT UNIQUE NOT NULL,
+    password_hash BYTEA,
+    password_salt BYTEA,
     balance_microcredits BIGINT NOT NULL DEFAULT 0,
     stripe_customer_id TEXT, -- for later?! prob not
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -11,7 +13,7 @@ CREATE TABLE devices (
     id BIGSERIAL PRIMARY KEY,
     account_id BIGINT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
-    pg_alg TEXT NOT NULL DEFAULT 'ml-dsa-65',
+    pq_alg TEXT NOT NULL DEFAULT 'ml-dsa-65',
     public_key BYTEA NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     last_seen TIMESTAMPTZ
@@ -23,6 +25,16 @@ CREATE TABLE auth_challanges (
     nonce BYTEA NOT NULL,
     expires_at TIMESTAMPTZ NOT NULL,
     used BOOLEAN NOT NULL DEFAULT false
+);
+
+CREATE TABLE enrollment_tokens (
+    id BIGSERIAL PRIMARY KEY,
+    account_id BIGINT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    token_hash BYTEA NOT NULL UNIQUE,
+    source TEXT NOT NULL, -- 'password' | 'qr' | 'email'
+    expires_at TIMESTAMPTZ NOT NULL,
+    used BOOLEAN NOT NULL DEFAULT false,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE sessions (
@@ -58,6 +70,7 @@ CREATE TABLE backups (
 
 CREATE INDEX ON devices (account_id);
 CREATE INDEX ON auth_challanges (device_id) WHERE NOT used;
+CREATE INDEX ON enrollment_tokens (account_id) WHERE NOT used;
 CREATE INDEX ON sessions (account_id);
 CREATE INDEX ON usage_events (account_id, created_at DESC);
 CREATE UNIQUE INDEX ON backups (account_id, version);
@@ -67,6 +80,7 @@ DROP TABLE backups;
 DROP TABLE usage_events; 
 DROP TABLE sessions; 
 DROP TABLE auth_challanges; 
+DROP TABLE enrollment_tokens;
 DROP TABLE devices; 
 DROP TABLE accounts;
--- completly freestyld of the dome.. num of changes made: its 9 now
+-- completly freestyld of the dome.. num of changes made: its 10 now... why split sql migrations in files?

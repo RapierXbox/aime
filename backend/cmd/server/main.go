@@ -69,7 +69,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:              config.HTTPAddr,
-		Handler:           api.Routes(),
+		Handler:           api.AccessLog(api.Recover(api.Routes())),
 		ReadHeaderTimeout: 10 * time.Second, // slowloris
 		WriteTimeout:      60 * time.Second,
 		ReadTimeout:       60 * time.Second,
