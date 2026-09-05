@@ -17,6 +17,7 @@ import (
 	"github.com/pressly/goose/v3"
 	"github.com/rapierxbox/aime/backend/internal/config"
 	"github.com/rapierxbox/aime/backend/internal/httpapi"
+	"github.com/rapierxbox/aime/backend/internal/metrics"
 	"github.com/rapierxbox/aime/backend/internal/store"
 )
 
@@ -62,9 +63,10 @@ func main() {
 	defer store.Close()
 
 	api := &httpapi.Server{
-		Store: store,
-		Cfg:   config,
-		Log:   slog.New(slog.NewJSONHandler(os.Stdout, nil)),
+		Store:   store,
+		Cfg:     config,
+		Log:     slog.New(slog.NewJSONHandler(os.Stdout, nil)),
+		Metrics: metrics.New(),
 	}
 
 	srv := &http.Server{
