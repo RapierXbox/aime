@@ -18,6 +18,8 @@ import {
   DialogTitle,
 } from "./components/ui/dialog";
 import InboxPage from "./components/page/InboxPage";
+import { Separator } from "./components/ui/separator";
+import { MessageView } from "./components/MessageView";
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
@@ -60,6 +62,7 @@ function App() {
   const inbox = useNavigationStore((it) => it.inbox);
   const settings = useNavigationStore((it) => it.settings);
   const closeSettings = useNavigationStore((it) => it.closeSettings);
+  const rightPanel = useNavigationStore((it) => it.rightPanel);
 
   return (
     <QueryClientProvider client={queryClient}>
@@ -94,6 +97,16 @@ function App() {
                   inboxId={inbox.inboxId}
                 />
               )}
+              <Separator orientation="vertical" />
+              <div className="flex-1 overflow-y-auto">
+                {rightPanel ? (
+                  <MessageView message={rightPanel.message} />
+                ) : (
+                  <div className="p-4 text-sm text-muted-foreground">
+                    Select an email to view it
+                  </div>
+                )}
+              </div>
             </Activity>
           </div>
         </SidebarInset>

@@ -1,14 +1,22 @@
 import { commands, type MailBox, type Message } from "@/bindings";
 import { qk } from "@/lib/queryKeys";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
-import { Separator } from "../ui/separator";
 import React from "react";
+import { cn } from "@/lib/utils";
+import { useNavigationStore } from "@/lib/NavigationStore";
 
 
 const InboxPage: React.FC<{
   accountId: string;
   inboxId: MailBox;
 }> = ({ accountId, inboxId }) => {
+  const selectEmail = useNavigationStore((state) => state.selectEmail);
+  const selectedId = useNavigationStore((state) =>
+    state.rightPanel?.accountId === accountId
+      ? state.rightPanel.message.provider_msg_id
+      : null,
+  );
+
   const fetchMessages = async ({ pageParam = 0 }) => {
     const res = await commands.listMessages(accountId, inboxId, pageParam);
     if (res.status === "ok") {
@@ -30,20 +38,19 @@ const InboxPage: React.FC<{
   });
 
   return (
-    <div className="flex flex-1 flex-row min-h-0">
-      <div className="w-[20rem] space-y-2 divide-y divide-accent overflow-y-scroll h-full">
-        {q.data?.pages?.map((group, i) => (
-          <React.Fragment key={i}>
-            {group.messages.map((msg) => (
-              <EmailPreview key={msg.provider_msg_id} message={msg} />
-            ))}
-          </React.Fragment>
-        ))}
-      </div>
-      <Separator orientation="vertical" />
-      <div className="flex-1 overflow-y-auto">
-        Inbox {inboxId} of {accountId}
-      </div>
+    <div className="w-[20rem] space-y-2 divide-y divide-accent overflow-y-scroll h-full">
+      {q.data?.pages?.map((group, i) => (
+        <React.Fragment key={i}>
+          {group.messages.map((msg) => (
+            <EmailPreview
+              key={msg.provider_msg_id}
+              message={msg}
+              active={msg.provider_msg_id === selectedId}
+              onSelect={() => selectEmail(accountId, msg)}
+            />
+          ))}
+        </React.Fragment>
+      ))}
     </div>
   );
 };
@@ -63,11 +70,18 @@ const displayName = (addr: string) =>
 
 const EmailPreview: React.FC<{
   message: Message;
-}> = ({ message }) => {
+  active: boolean;
+  onSelect: () => void;
+}> = ({ message, active, onSelect }) => {
   const parsed = message.date_header && new Date(message.date_header);
 
   return (
-    <div className="px-2 py-1">
+    <div
+      className={cn("px-2 py-1 cursor-pointer", {
+        "bg-sidebar-accent": active,
+      })}
+      onClick={onSelect}
+    >
       <div className="flex">
         <p className="font-semibold text-sm line-clamp-1">
           {displayName(message.from_addr)}
