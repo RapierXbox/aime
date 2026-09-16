@@ -23,10 +23,12 @@ export const commands = {
 /* Types */
 export type AppError = "MissingDbPath" | "GmailResponseIncomplete" | "OAuth" | ({ HttpErr: number }) & { GmailApiErr?: never; GmailErr?: never; Io?: never; Serde?: never; Sqlx?: never; Tauri?: never } | ({ Sqlx: SqlxError }) & { GmailApiErr?: never; GmailErr?: never; HttpErr?: never; Io?: never; Serde?: never; Tauri?: never } | ({ Io: IoError }) & { GmailApiErr?: never; GmailErr?: never; HttpErr?: never; Serde?: never; Sqlx?: never; Tauri?: never } | "UrlParseError" | "KeyringSaveError" | "KeyringLoadError" | "AccountTypeMismatch" | "GmailMissingLabels" | ({ Serde: SerdeError }) & { GmailApiErr?: never; GmailErr?: never; HttpErr?: never; Io?: never; Sqlx?: never; Tauri?: never } | ({ Tauri: TauriError }) & { GmailApiErr?: never; GmailErr?: never; HttpErr?: never; Io?: never; Serde?: never; Sqlx?: never } | "AccountNotFound" | ({ GmailErr: GmailError }) & { GmailApiErr?: never; HttpErr?: never; Io?: never; Serde?: never; Sqlx?: never; Tauri?: never } | ({ GmailApiErr: GmailApiError }) & { GmailErr?: never; HttpErr?: never; Io?: never; Serde?: never; Sqlx?: never; Tauri?: never } | "ParseAccountID" | "ParseSyncCursor" | "InvalidEmailBody";
 
-export type GmailApiError = "HttpError" | ({ UploadSizeLimitExceeded: {
-	resource_size: number | null,
-	max_size: number | null,
-} }) & { Failure?: never } | "BadRequest" | "MissingAPIKey" | "MissingToken" | "Cancelled" | "FieldClash" | "JsonDecodeError" | ({ Failure: number }) & { UploadSizeLimitExceeded?: never } | "Io";
+export type GmailApiError = "HttpError" | ({
+	UploadSizeLimitExceeded: {
+		resource_size: number | null,
+		max_size: number | null,
+	}
+}) & { Failure?: never } | "BadRequest" | "MissingAPIKey" | "MissingToken" | "Cancelled" | "FieldClash" | "JsonDecodeError" | ({ Failure: number }) & { UploadSizeLimitExceeded?: never } | "Io";
 
 export type GmailError = "AuthUrlParse" | "TokenUrlParse" | "RedirectUrlParse" | "OauthRedirect" | "OauthHttpResp" | "OauthTcpListen" | "MessageNotSkeleton" | "UnsupportedMimeVer" | "UnsupportedMimeType" | "MessagePartNotLeaf" | { MissingField: MissingField };
 
@@ -69,10 +71,12 @@ export type MessageContents = {
 
 export type MissingField = "ThreadId" | "SyncCursor" | "LabelIds" | "InternalDate" | "SizeEstimate" | "DateHeader" | "FromAddr" | "ToAddrs" | "CcAddrs" | "InReplyTo" | "MsgReferences" | "Subject" | "Snippet" | "MsgId" | "Payload" | "Headers" | "InLabel";
 
-export type Progress = ({ Update: {
-	completed: number,
-	out_of: number,
-} }) & { Message?: never } | ({ Message: string }) & { Update?: never };
+export type Progress = ({
+	Update: {
+		completed: number,
+		out_of: number,
+	}
+}) & { Message?: never } | ({ Message: string }) & { Update?: never };
 
 /**  Mirrors `serde_json::error::Category` — the meaningful failure kinds. */
 export type SerdeError = "Io" | "Syntax" | "Data" | "Eof";
@@ -84,14 +88,18 @@ export type SqlxDbErrorKind = "UniqueViolation" | "ForeignKeyViolation" | "NotNu
  *  Typed wrapper around `sqlx::Error` with machine-readable variants.
  *  No string fields — use the error `Display` for human messages.
  */
-export type SqlxError = "RowNotFound" | 
-/**  Database-level error; `kind` encodes the constraint violation category. */
-({ Database: {
-	kind: SqlxDbErrorKind,
-} }) & { ColumnIndexOutOfBounds?: never } | ({ ColumnIndexOutOfBounds: {
-	index: number,
-	len: number,
-} }) & { Database?: never } | "PoolTimedOut" | "PoolClosed" | "WorkerCrashed" | "Other";
+export type SqlxError = "RowNotFound" |
+	/**  Database-level error; `kind` encodes the constraint violation category. */
+	({
+		Database: {
+			kind: SqlxDbErrorKind,
+		}
+	}) & { ColumnIndexOutOfBounds?: never } | ({
+		ColumnIndexOutOfBounds: {
+			index: number,
+			len: number,
+		}
+	}) & { Database?: never } | "PoolTimedOut" | "PoolClosed" | "WorkerCrashed" | "Other";
 
 /**
  *  Tauri runtime errors. `Io`/`Json` are peeled off to the top-level `AppError`
@@ -102,11 +110,11 @@ export type TauriError = "InvalidArgs" | "Setup" | "Other";
 
 /* Tauri Specta runtime */
 async function typedError<T, E>(result: Promise<T>): Promise<{ status: "ok"; data: T } | { status: "error"; error: E }> {
-    try {
-        return { status: "ok", data: await result };
-    } catch (e) {
-        if (e instanceof Error) throw e;
-        return { status: "error", error: e as any };
-    }
+	try {
+		return { status: "ok", data: await result };
+	} catch (e) {
+		if (e instanceof Error) throw e;
+		return { status: "error", error: e as E };
+	}
 }
 

@@ -1,62 +1,28 @@
 import { Separator } from "@/components/ui/separator";
 
-import React, { useEffect } from "react";
+import React from "react";
 import googleSigninLight from "@/assets/google_signin_light.svg";
 import googleSigninDark from "@/assets/google_signin_dark.svg";
 import { Button } from "@/components/ui/button";
-import { DevOnly } from "@/components/dev/DevOnly";
-import {
-  commands,
-  type AppError,
-  type ListEmailEntry,
-  type Progress,
-} from "@/bindings";
-import { Channel } from "@tauri-apps/api/core";
+import { commands, type ListEmailEntry } from "@/bindings";
 import { Progress as ProgressBar } from "radix-ui";
 import { useQuery } from "@tanstack/react-query";
 import { qk } from "@/lib/queryKeys";
+import { accountSyncState, useSyncStore } from "@/lib/SyncStore";
+
+const syncBtnText = {
+  idle: "Sync",
+  syncing: "⏳",
+  ok: "☑️",
+  error: "❌",
+} as const;
 
 // a singular entry with sync and refresh buttons
 const EmailAccEntry: React.FC<{ acc: ListEmailEntry }> = ({ acc }) => {
-  const [syncBtnText, setSyncBtnText] = React.useState<string>("Sync");
-  const [progress, setProgress] = React.useState<number | null>(null);
-  const [statusMessage, setStatusMessage] = React.useState<string | null>(
-    null,
+  const { status, progress, statusMessage } = useSyncStore((s) =>
+    accountSyncState(s, acc.id),
   );
-  const chan = new Channel<Progress>();
-
-  chan.onmessage = (p) => {
-    if (p.Update) {
-      if (p.Update.completed === p.Update.out_of) {
-        setTimeout(() => setProgress(null), 5000);
-      }
-
-      setProgress(p.Update.completed / p.Update.out_of);
-    } else if (p.Message) {
-      setStatusMessage(p.Message);
-    }
-  };
-
-  const fullSyncBtnOnclick = () => {
-    commands.devEmailFullSync(acc.id, chan).then(() => setStatusMessage(null));
-  };
-
-  const syncBtnOnClick = () => {
-    const req = commands.emailSync(acc.id, chan);
-
-    setSyncBtnText("⏳");
-    req.then((res) => {
-      setStatusMessage(null);
-
-      if (res.status === "ok") {
-        setSyncBtnText("☑️");
-      } else {
-        setSyncBtnText("❌");
-      }
-
-      setTimeout(() => setSyncBtnText("Sync"), 5000);
-    });
-  };
+  const sync = useSyncStore((s) => s.sync);
 
   return (
     <>
@@ -71,8 +37,8 @@ const EmailAccEntry: React.FC<{ acc: ListEmailEntry }> = ({ acc }) => {
 
           <span className="font-medium mr-auto">{acc.name}</span>
 
-          <Button onClick={syncBtnOnClick}>{syncBtnText}</Button>
-          <Button variant="destructive" onClick={fullSyncBtnOnclick}>
+          <Button onClick={() => sync(acc.id)}>{syncBtnText[status]}</Button>
+          <Button variant="destructive" onClick={() => sync(acc.id, true)}>
             Full Sync
           </Button>
         </div>
