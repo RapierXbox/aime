@@ -74,6 +74,7 @@ func (s *Server) RequireAuth(next http.Handler) http.Handler {
 		if err != nil {
 			s.Log.Error("failed to get session by token hash", "error", err)
 			s.writeError(w, http.StatusInternalServerError, "internal")
+			return
 		}
 
 		ctx := context.WithValue(r.Context(), accountKey, sess.AccountID)

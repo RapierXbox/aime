@@ -30,7 +30,7 @@ func NormalizeEmail(email string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return strings.ToLower(emailAddr.String()), nil
+	return strings.ToLower(emailAddr.Address), nil
 }
 
 // --
@@ -45,7 +45,7 @@ type createAccountRes struct {
 
 func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 	var req createAccountReq
-	if err := s.decodeJSON(w, r, req); err != nil {
+	if err := s.decodeJSON(w, r, &req); err != nil {
 		return
 	}
 
@@ -64,6 +64,7 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 	accountID, err := s.Store.CreateAccount(r.Context(), email, hash, salt)
 	if errors.Is(err, store.ErrEmailTaken) {
 		s.writeError(w, http.StatusConflict, "email already registred")
+		return
 	}
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "internal")
@@ -87,7 +88,7 @@ type loginPasswordRes struct {
 
 func (s *Server) handleLoginPassword(w http.ResponseWriter, r *http.Request) {
 	var req loginPasswordReq
-	if err := s.decodeJSON(w, r, req); err != nil {
+	if err := s.decodeJSON(w, r, &req); err != nil {
 		return
 	}
 
@@ -134,12 +135,12 @@ type createDeviceRes struct {
 
 func (s *Server) handleCreateDevice(w http.ResponseWriter, r *http.Request) {
 	var req createDeviceReq
-	if err := s.decodeJSON(w, r, req); err != nil {
+	if err := s.decodeJSON(w, r, &req); err != nil {
 		return
 	}
 
-	if len(req.Name) <= 2 {
-		s.writeError(w, http.StatusBadGateway, "name must be longer then 1")
+	if utf8.RuneCountInString(req.Name) <= 2 {
+		s.writeError(w, http.StatusBadRequest, "name must be longer then 1")
 		return
 	}
 
@@ -149,8 +150,13 @@ func (s *Server) handleCreateDevice(w http.ResponseWriter, r *http.Request) {
 	}
 
 	accountID, err := s.Store.ConsumeEnrollmentToken(r.Context(), auth.HashToken(req.EnrollmentToken))
-	if errors.Is(err, store.ErrChallengeInvalid) {
+	if errors.Is(err, store.ErrEnrollmentInvalid) {
 		s.writeError(w, http.StatusUnauthorized, "invalid enrollment token")
+		return
+	}
+	if err != nil {
+		s.Log.Error("failed to consume enrollment token", "error", err)
+		s.writeError(w, http.StatusInternalServerError, "internal")
 		return
 	}
 
@@ -178,7 +184,7 @@ type challangeRes struct {
 
 func (s *Server) handleChallange(w http.ResponseWriter, r *http.Request) {
 	var req challangeReq
-	if err := s.decodeJSON(w, r, req); err != nil {
+	if err := s.decodeJSON(w, r, &req); err != nil {
 		return
 	}
 
@@ -209,7 +215,7 @@ type verifyRes struct {
 
 func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 	var req verifyReq
-	if err := s.decodeJSON(w, r, req); err != nil {
+	if err := s.decodeJSON(w, r, &req); err != nil {
 		return
 	}
 

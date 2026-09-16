@@ -14,8 +14,8 @@ func (s *Server) writeJSON(w http.ResponseWriter, status int, v any) {
 	}
 }
 
-func (s *Server) writeError(w http.ResponseWriter, status int, error string) {
-	s.writeJSON(w, status, map[string]string{"error": "error"})
+func (s *Server) writeError(w http.ResponseWriter, status int, err string) {
+	s.writeJSON(w, status, map[string]string{"error": err})
 }
 
 func (s *Server) decodeJSON(w http.ResponseWriter, r *http.Request, v any) error {
