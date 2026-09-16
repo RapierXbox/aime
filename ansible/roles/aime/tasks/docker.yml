@@ -1,9 +1,9 @@
-- name: Instal prerequisites
+- name: Install prerequisites
   ansible.builtin.apt:
     name: [ca-certificates, curl, gnupg, git]
     state: present
     update_cache: true
-  
+
 - name: Create apt keyrings dir
   ansible.builtin.file:
     path: /etc/apt/keyrings
@@ -25,14 +25,15 @@
   ansible.builtin.apt_repository:
     repo: >-
       deb [arch={{ dpkg_arch.stdout }} signed-by=/etc/apt/keyrings/docker.asc]
-      "https://download.docker.com/linux/{{ ansible_distribution | lower }}
+      https://download.docker.com/linux/{{ ansible_distribution | lower }}
       {{ ansible_distribution_release }} stable
     filename: docker
     state: present
 
-- name: Install docker engine and compose plugn
+- name: Install docker engine and compose plugin
   ansible.builtin.apt:
     name:
+      - docker-ce
       - docker-ce-cli
       - containerd.io
       - docker-buildx-plugin
@@ -40,7 +41,7 @@
     state: present
     update_cache: true
 
-- name: Ensure Docker is running and enabled
+- name: Ensure docker is running and enabled
   ansible.builtin.service:
     name: docker
     state: started

@@ -14,17 +14,17 @@
 
 - name: Render the env file
   ansible.builtin.template:
-    src: env.j2
+    src: opt/aime/.env.j2
     dest: "{{ aime_app_dir }}/.env"
     mode: "0600"
 
 - name: Render the caddyfile
   ansible.builtin.template:
-    src: "{{ playbook_dir }}/../deploy/caddy/Caddy.j2"
+    src: opt/aime/deploy/caddy/Caddyfile.j2
     dest: "{{ aime_app_dir }}/deploy/caddy/Caddyfile"
+    mode: "0644"
 
-
-- name: "Start the stack"
+- name: Start the stack
   community.docker.docker_compose_v2:
     project_src: "{{ aime_app_dir }}/deploy/compose"
     files:

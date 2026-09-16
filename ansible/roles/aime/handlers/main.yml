@@ -1,0 +1,6 @@
+# handlers are notified by their `listen` topic, e.g. `notify: aime.wireguard.restart`
+- name: Restart wireguard
+  listen: aime.wireguard.restart
+  ansible.builtin.systemd:
+    name: wg-quick@wg0
+    state: restarted
