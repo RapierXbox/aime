@@ -19,7 +19,7 @@ import { Button } from "./ui/button";
 export function SidebarUser() {
   const aimeAccount: AimeUser | null = useAuthStore((state) => state.account);
 
-  const navigateTo = useNavigationStore((state) => state.navigateTo);
+  const openSettings = useNavigationStore((state) => state.openSettings);
 
   return (
     <SidebarMenu>
@@ -56,7 +56,7 @@ export function SidebarUser() {
                 variant="ghost"
                 className="flex items-center gap-2 px-1 py-6 text-left text-sm"
                 onClick={() =>
-                  navigateTo({ page: "settings", section: "account" })
+                  openSettings("account")
                 }
               >
                 <div
@@ -76,7 +76,7 @@ export function SidebarUser() {
             <DropdownMenuSeparator />
             <DropdownMenuItem
               onClick={() =>
-                navigateTo({ page: "settings", section: "application" })
+                openSettings("application")
               }
             >
               <Settings />

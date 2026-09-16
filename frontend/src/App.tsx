@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-unused-vars */
-import { useEffect, useState, type ReactNode } from "react";
+import { Activity, useEffect, useState } from "react";
 import "./App.css";
 
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -10,16 +10,13 @@ import {
   SidebarTrigger,
 } from "@/components/ui/sidebar";
 import { AppSidebar } from "./components/ui/AppSidebar";
-import { Separator } from "./components/ui/separator";
-import {
-  useNavigationStore,
-  selectCurrentPage,
-  type Page,
-} from "./lib/NavigationStore";
-import LoginPage from "./components/page/AimeLogin";
-import { ArrowLeft, ArrowRight } from "lucide-react";
-import MainPage from "./components/page/MainPage";
+import { useNavigationStore } from "./lib/NavigationStore";
 import Settings from "./components/page/Settings";
+import {
+  Dialog,
+  DialogContent,
+  DialogTitle,
+} from "./components/ui/dialog";
 import InboxPage from "./components/page/InboxPage";
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -60,9 +57,9 @@ function App() {
     // listen("invalidate", (ev) => {})
   }, []);
 
-  const currentPage = useNavigationStore(selectCurrentPage);
-  const navigateBack = useNavigationStore((it) => it.navigateBack);
-  const navigateForward = useNavigationStore((it) => it.navigateForward);
+  const inbox = useNavigationStore((it) => it.inbox);
+  const settings = useNavigationStore((it) => it.settings);
+  const closeSettings = useNavigationStore((it) => it.closeSettings);
 
   return (
     <QueryClientProvider client={queryClient}>
@@ -79,58 +76,36 @@ function App() {
               className="hover:bg-border ml-1"
               color="var(--muted-foreground)"
             />
-            {/* Navigation buttons */}
-            <div className="flex flex-row items-center flex-1">
-              <button
-                className="p-2 hover:bg-border rounded-l-md h-6 flex items-center "
-                aria-label="Previous page"
-                onClick={navigateBack}
-              >
-                <ArrowLeft color="var(--muted-foreground)" size={16} />
-              </button>
-              <Separator orientation="vertical" className="h-6" />
-
-              <button
-                className="p-2 hover:bg-border rounded-r-md h-6 flex items-center"
-                aria-label="Next page"
-                onClick={navigateForward}
-              >
-                <ArrowRight color="var(--muted-foreground)" size={16} />
-              </button>
-            </div>
             <span
               id="currentPage"
               className="font-heading text-muted-foreground mx-2 select-none ml-auto"
             >
-              {currentPage.page}
+              {inbox?.inboxId}
             </span>
           </header>
-          <div className="flex flex-1 min-h-0">{renderPage(currentPage)}</div>
+          <div className="flex flex-1 min-h-0">
+            {/* persists component state while improving performance, hides the component while settings are open */}
+            <Activity mode={settings ? "hidden" : "visible"}>
+              {inbox && (
+                // key forces a remount when switching inbox, so no state leaks across them
+                <InboxPage
+                  key={`${inbox.accountId}:${inbox.inboxId}`}
+                  accountId={inbox.accountId}
+                  inboxId={inbox.inboxId}
+                />
+              )}
+            </Activity>
+          </div>
         </SidebarInset>
       </SidebarProvider>
+      <Dialog open={!!settings} onOpenChange={(open) => !open && closeSettings()}>
+        <DialogContent className="flex h-[80vh] p-0 gap-0 rounded-none sm:max-w-3xl">
+          <DialogTitle className="sr-only">Settings</DialogTitle>
+          <Settings />
+        </DialogContent>
+      </Dialog>
     </QueryClientProvider>
   );
-}
-
-/// Renders the component for the current page.
-function renderPage(page: Page): ReactNode {
-  switch (page.page) {
-    case "login":
-      return <LoginPage />;
-    case "main":
-      return <MainPage />;
-    case "settings":
-      return <Settings />;
-    case "inbox":
-      // key forces a remount when switching inbox, so no state leaks across them
-      return (
-        <InboxPage
-          key={`${page.accountId}:${page.inboxId}`}
-          accountId={page.accountId}
-          inboxId={page.inboxId}
-        />
-      );
-  }
 }
 
 export default App;

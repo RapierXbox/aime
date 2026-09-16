@@ -21,16 +21,15 @@ import {
   CollapsibleTrigger,
 } from "./collapsible";
 import { ChevronDown } from "lucide-react";
-import { selectCurrentPage, useNavigationStore } from "@/lib/NavigationStore";
+import { useNavigationStore } from "@/lib/NavigationStore";
 
 const SidebarEmailInbox: React.FC<{
   acc: ListEmailEntry;
 }> = ({ acc }) => {
-  const navigateTo = useNavigationStore((state) => state.navigateTo);
-  const curr = useNavigationStore(selectCurrentPage);
-
-  const active =
-    curr.page === "inbox" && curr.accountId === acc.id ? curr.inboxId : null;
+  const openInbox = useNavigationStore((state) => state.openInbox);
+  const active = useNavigationStore((state) =>
+    state.inbox?.accountId === acc.id ? state.inbox.inboxId : null,
+  );
 
   return (
     <Collapsible defaultOpen className="group/collapsible">
@@ -50,13 +49,7 @@ const SidebarEmailInbox: React.FC<{
                   className={cn("w-full cursor-pointer", {
                     "bg-sidebar-accent": active === it.id,
                   })}
-                  onClick={() =>
-                    navigateTo({
-                      page: "inbox",
-                      accountId: acc.id,
-                      inboxId: it.id,
-                    })
-                  }
+                  onClick={() => openInbox(acc.id, it.id)}
                 >
                   <it.icon />
                   {it.name}

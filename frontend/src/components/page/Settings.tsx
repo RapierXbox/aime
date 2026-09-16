@@ -2,19 +2,14 @@ import AccountSection from "./settings/AccountSection";
 import ApplicationSection from "./settings/ApplicationSection";
 import { Separator } from "../ui/separator";
 import { LaptopMinimal, User, type LucideProps } from "lucide-react";
-import { selectCurrentPage, useNavigationStore } from "@/lib/NavigationStore";
+import { useNavigationStore } from "@/lib/NavigationStore";
 
 /// the individual sections of the settings page
 export type SettingsSection = "account" | "application";
 
 const LoginPage: React.FC = () => {
-  const navigateTo = useNavigationStore((state) => state.navigateTo);
-
-  const currentSection = useNavigationStore((state) => {
-    const page = selectCurrentPage(state);
-    if (page.page !== "settings") return null;
-    return page.section;
-  });
+  const openSettings = useNavigationStore((state) => state.openSettings);
+  const currentSection = useNavigationStore((state) => state.settings);
 
   const CurrSectionComponent: React.FC | undefined = SECTIONS.find(
     (section) => section.id === currentSection,
@@ -34,9 +29,7 @@ const LoginPage: React.FC = () => {
             key={section.id}
             className="text-left text-sm font-heading hover:bg-muted rounded-sm p-1
             py-2 text-secondary-foreground flex justify-start items-center gap-1 "
-            onClick={() =>
-              navigateTo({ page: "settings", section: section.id })
-            }
+            onClick={() => openSettings(section.id)}
           >
             <section.icon color="var(--muted-foreground)" size="16" />
             {section.name}

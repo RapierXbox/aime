@@ -10,7 +10,6 @@ import {
   SidebarRail,
 } from "@/components/ui/sidebar";
 import { Separator } from "@/components/ui/separator";
-import { useNavigationStore } from "@/lib/NavigationStore";
 import { useQuery } from "@tanstack/react-query";
 import { commands } from "@/bindings";
 import SidebarEmailInbox from "./SidebarEmailInbox";
@@ -26,17 +25,12 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
       }),
   });
 
-  const navigateTo = useNavigationStore((state) => state.navigateTo);
-
   return (
     <Sidebar {...props}>
       <SidebarHeader className="flex">
-        <button
-          className=" flex-1 font-heading text-2xl text-right select-none text-foreground"
-          onClick={() => navigateTo({ page: "main" })}
-        >
+        <span className=" flex-1 font-heading text-2xl text-right select-none text-foreground">
           AiMe
-        </button>
+        </span>
       </SidebarHeader>
       <SidebarContent>
         <SidebarGroup>
