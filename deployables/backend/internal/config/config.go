@@ -10,7 +10,7 @@ import (
 type Config struct {
 	HTTPAddr    string
 	DatabaseURL string
-	Env         string // prod vs dev
+	Env         string // dev | int | prod
 	Backend     string // onnx vs hailo
 	MaxBackupMB int64
 }
@@ -22,13 +22,15 @@ func Load() (*Config, error) {
 		return nil, errors.New("DATABASE_URL not defined or empty!")
 	}
 	env := getenv("APP_ENV", "dev")
-	if env != "dev" && env != "prod" {
-		return nil, fmt.Errorf("APP_ENV not valid... expectet 'dev' or 'prod', got %s", env)
+	switch env {
+	case "dev", "int", "prod":
+	default:
+		return nil, fmt.Errorf("APP_ENV not valid... expected 'dev', 'int' or 'prod', got %s", env)
 	}
 	backend := getenv("BACKEND", "onnx")
 	max_backup_mb, err := strconv.Atoi(getenv("MAX_BACKUP_MB", "1024"))
 	if err != nil {
-		return nil, fmt.Errorf("MAX_BACKUP_MB invalid: %s - %s", getenv("MAX_BACKU_MB", ""), err.Error())
+		return nil, fmt.Errorf("MAX_BACKUP_MB invalid: %s - %s", getenv("MAX_BACKUP_MB", ""), err.Error())
 	}
 	return &Config{
 		HTTPAddr:    httpaddr,

@@ -1,13 +1,14 @@
 # env
 .env
-backend/.env
-frontend/.env
+deployables/backend/.env
+deployables/frontend/.env
 
 # go
-backend/bin/
+deployables/backend/bin/
+deployables/backend/server
 
 # ansible rendered + secrets
 deploy/caddy/Caddyfile
-deploy/ansible/invntory/group_vars/all/vault.yml
+ansible/inventory/group_vars/all/vault.yml
 *.retry
 CLAUDE.md

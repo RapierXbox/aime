@@ -20,7 +20,7 @@
 
 - name: Render the caddyfile
   ansible.builtin.template:
-    src: "{{ playbook_dir }}/../caddy/Caddy.j2"
+    src: "{{ playbook_dir }}/../deploy/caddy/Caddy.j2"
     dest: "{{ aime_app_dir }}/deploy/caddy/Caddyfile"
 
 

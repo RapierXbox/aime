@@ -1,11 +1,11 @@
 version: '3'
 
-dotenv: ['.env', 'backend/.env']
+dotenv: ['.env', 'deployables/backend/.env']
 
 vars:
   COMPOSE: docker compose --env-file .env -f deploy/compose/docker-compose.yml
   ANSIBLE: ansible-playbook
-  ANSIBLE_DIR: deploy/ansible
+  ANSIBLE_DIR: ansible
   VAULT_FLAG: '{{if .VAULT_PASS_FILE}}--vault-password-file {{.VAULT_PASS_FILE}}{{else}}--ask-vault-pass{{end}}'
 
 tasks:
@@ -93,34 +93,34 @@ tasks:
     desc: "create local .env files from .env.example (if they dont already exist)"
     cmds:
       - cp .env.example .env
-      - cp backend/.env.example backend/.env
-      - cp frontend/.env.example frontend/.env
+      - cp deployables/backend/.env.example deployables/backend/.env
+      - cp deployables/frontend/.env.example deployables/frontend/.env
     status:
       - test -f .env
-      - test -f backend/.env
-      - test -f frontend/.env
+      - test -f deployables/backend/.env
+      - test -f deployables/frontend/.env
 
   deps:backend:
-    dir: backend
+    dir: deployables/backend
     cmds: [go mod download]
 
   deps:frontend:
-    dir: frontend
+    dir: deployables/frontend
     cmds: [pnpm install]
 
   deps:ansible:
-    dir: deploy/ansible
+    dir: ansible
     cmds: [ansible-galaxy collection install -r requirements.yml]
 
   # dev loop
   dev:backend:
     desc: "run the go api locally (needs task db:up first)"
-    dir: backend
+    dir: deployables/backend
     cmds: [go run ./cmd/server]
 
   dev:frontend:
     desc: "run the tauri + vite desktop app"
-    dir: frontend
+    dir: deployables/frontend
     cmds: [pnpm tauri dev]
   
   # docker stack
@@ -151,14 +151,14 @@ tasks:
   # quality
   build:
     desc: "compile the backend binary"
-    dir: backend
+    dir: deployables/backend
     sources: ['**/*.go', go.mod, go.sum]
     generates: [bin/aime-server]
     cmds: [go build -o bin/aime-server ./cmd/server]
 
   test:
     desc: "run backend tests (there will be none lol)"
-    dir: backend
+    dir: deployables/backend
     cmds: [go test ./...]
 
   lint:
@@ -166,21 +166,21 @@ tasks:
     deps: [lint:backend, lint:frontend]
 
   lint:backend:
-    dir: backend
+    dir: deployables/backend
     cmds: [golangci-lint run]
 
   lint:frontend:
-    dir: frontend
+    dir: deployables/frontend
     cmds: [pnpm lint]
   
   fmt:
     desc: "format go code"
-    dir: backend
+    dir: deployables/backend
     cmds: [go fmt ./...]
 
   tidy:
     desc: tidy go.mod/go.sum
-    dir: backend
+    dir: deployables/backend
     cmds: [go mod tidy]
   
   # deploy

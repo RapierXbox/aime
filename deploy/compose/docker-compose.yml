@@ -20,14 +20,14 @@ services:
     
   backend:
     build:
-      context: ../../backend
+      context: ../../deployables/backend
     restart: unless-stopped
     depends_on:
       db:
         condition: service_healthy
     environment:
       HTTP_ADDR: ":8080"
-      APP_ENV: ${APP_ENV:-development}
+      APP_ENV: ${APP_ENV:-dev}
       DATABASE_URL: postgres://${POSTGRES_USER:-aime}:${POSTGRES_PASSWORD:-aime}@db:5432/${POSTGRES_DB:-aime}?sslmode=disable
     expose:
       - "8080"

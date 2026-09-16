@@ -17,6 +17,12 @@ AIME is the best and most secure way to add a knowlageable to your existing job 
     - Tauri + React SPA (vite, tailwind, shadcn/ui)
 - Deployed using Ansible and Docker Compose
 
+### Layout:
+- `deployables/backend` - Go API (see its go.mod, module path stays `github.com/rapierxbox/aime/backend`)
+- `deployables/frontend` - Tauri + React app
+- `deploy/` - docker compose stack, caddy, prometheus, grafana
+- `ansible/` - server provisioning + deploy playbook
+
 ### Getting Started:
 Install https://taskfile.dev
 run *task* to see all commands

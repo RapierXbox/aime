@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"embed"
 	"errors"
-	"log"
 	"log/slog"
 	"net/http"
 	"os"
@@ -41,31 +40,38 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	log.Print("Loading config...")
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+
+	// fatal logs and exits; deferred cleanups dont run, same as log.Fatalf did
+	fatal := func(msg string, err error) {
+		logger.Error(msg, "error", err)
+		os.Exit(1)
+	}
+
+	logger.Info("loading config")
 	config, err := config.Load()
 	if err != nil {
-		log.Fatalf("FATAL ERROR loading config: %s", err.Error())
+		fatal("loading config failed", err)
 	}
 
-	log.Print("Applying DB migrations...")
-	err = migrate(config.DatabaseURL)
-	if err != nil {
-		log.Fatalf("ERROR running DB migrations: %s", err.Error())
+	logger.Info("applying db migrations")
+	if err := migrate(config.DatabaseURL); err != nil {
+		fatal("running db migrations failed", err)
 	}
 
-	log.Print("Connecting to Postgres...")
+	logger.Info("connecting to postgres")
 	dbCtx, dbCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer dbCancel()
 	store, err := store.Open(dbCtx, config.DatabaseURL)
 	if err != nil {
-		log.Fatalf("FATAL ERROR connecting to db pool: %s", err.Error())
+		fatal("connecting to db pool failed", err)
 	}
 	defer store.Close()
 
 	api := &httpapi.Server{
 		Store:   store,
 		Cfg:     config,
-		Log:     slog.New(slog.NewJSONHandler(os.Stdout, nil)),
+		Log:     logger,
 		Metrics: metrics.New(),
 	}
 
@@ -84,17 +90,18 @@ func main() {
 			errChan <- err
 		}
 	}()
+	logger.Info("listening", "addr", config.HTTPAddr, "env", config.Env)
 
 	select {
 	case err := <-errChan:
-		log.Fatalf("server error: %s", err.Error())
+		fatal("server error", err)
 	case <-ctx.Done():
-		log.Print("shutting down")
+		logger.Info("shutting down")
 	}
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		log.Fatalf("server shutdown error: %s", err.Error())
+		fatal("server shutdown error", err)
 	}
 }
