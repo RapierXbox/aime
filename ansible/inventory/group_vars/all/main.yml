@@ -1,13 +1,24 @@
-aime_app_dir: /opt/aime
-aime_repo_url: "git@github.com:RapierXbox/aime.git"
+# everything is read as aime.<section>.<key>
+# ansible replaces dicts across all -> group -> host instead of merging them,
+# so the tree is assembled here from three layers:
+#   aime_defaults  (this file)          shared by every host
+#   aime_group     (group_vars/<env>)   per environment
+#   aime_host      (host_vars/<host>)   per machine
+aime: "{{ aime_defaults | combine(aime_group | default({}), aime_host | default({}), recursive=true) }}"
 
-aime_postgres_user: aime
-aime_postgres_db: aime
-aime_postgres_password: "{{ vault_postgres_password }}"
-
-aime_grafana_admin_user: aime
-aime_grafana_admin_password: "{{ vault_grafana_admin_password }}"
-
-aime_wg_hub_public_key: "VOLlfoah9H/y/1ICbGGJd4oVdnJKs8d1is4ZnP5YUW8="
-aime_wg_hub_endpoint: "codeclub.check24.fun:51820"
-aime_wg_hub_allowed_ips: "172.16.67.0/24"
+aime_defaults:
+  app_dir: /opt/aime
+  repo:
+    url: "git@github.com:RapierXbox/aime.git"
+  postgres:
+    user: aime
+    db: aime
+    password: "{{ vault_postgres_password }}"
+  grafana:
+    admin_user: aime
+    admin_password: "{{ vault_grafana_admin_password }}"
+  wg:
+    hub:
+      public_key: "VOLlfoah9H/y/1ICbGGJd4oVdnJKs8d1is4ZnP5YUW8="
+      endpoint: "codeclub.check24.fun:51820"
+      allowed_ips: "172.16.67.0/24"

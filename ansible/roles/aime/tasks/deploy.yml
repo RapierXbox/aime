@@ -1,37 +1,37 @@
 - name: Ensure app directory exists
   ansible.builtin.file:
-    path: "{{ aime_app_dir }}"
+    path: "{{ aime.app_dir }}"
     state: directory
     mode: "0755"
 
 - name: Checkout / update repo
   ansible.builtin.git:
-    repo: "{{ aime_repo_url }}"
-    dest: "{{ aime_app_dir }}"
-    version: "{{ aime_git_version }}"
+    repo: "{{ aime.repo.url }}"
+    dest: "{{ aime.app_dir }}"
+    version: "{{ aime.repo.version }}"
     accept_hostkey: true
     force: true
 
 - name: Render the env file
   ansible.builtin.template:
     src: opt/aime/.env.j2
-    dest: "{{ aime_app_dir }}/.env"
+    dest: "{{ aime.app_dir }}/.env"
     mode: "0600"
 
 - name: Render the caddyfile
   ansible.builtin.template:
     src: opt/aime/deploy/caddy/Caddyfile.j2
-    dest: "{{ aime_app_dir }}/deploy/caddy/Caddyfile"
+    dest: "{{ aime.app_dir }}/deploy/caddy/Caddyfile"
     mode: "0644"
 
 - name: Start the stack
   community.docker.docker_compose_v2:
-    project_src: "{{ aime_app_dir }}/deploy/compose"
+    project_src: "{{ aime.app_dir }}/deploy/compose"
     files:
       - docker-compose.yml
       - docker-compose.edge.yml
     env_files:
-      - "{{ aime_app_dir }}/.env"
+      - "{{ aime.app_dir }}/.env"
     profiles: [edge, monitoring]
     build: always
     state: present

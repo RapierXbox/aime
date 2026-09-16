@@ -35,7 +35,7 @@
 
 - name: Show public key (register this peer on the hub)
   ansible.builtin.debug:
-    msg: "PublicKey={{ wg_pubkey.stdout }} AllowedIPs={{ aime_wg_address }}/32"
+    msg: "PublicKey={{ wg_pubkey.stdout }} AllowedIPs={{ aime.wg.address }}/32"
 
 - name: Render wg0.conf
   ansible.builtin.template:

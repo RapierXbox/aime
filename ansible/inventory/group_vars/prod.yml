@@ -1,3 +1,4 @@
-aime_env: prod
-aime_git_version: main
-aime_wg_address: "10.10.0.100"
+aime_group:
+  env: prod
+  repo:
+    version: main
