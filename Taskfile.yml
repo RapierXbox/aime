@@ -136,6 +136,20 @@ tasks:
     desc: "build and start the full stack in docker"
     cmds: ['{{.COMPOSE}} up -d --build']
 
+  up:local:
+    desc: "db + backend with the api on localhost:8080 (demo/dev; BACKEND=onnx needs ./models)"
+    cmds: ['{{.COMPOSE}} -f deploy/compose/docker-compose.local.yml up -d --build db backend']
+
+  demo:
+    desc: "embed a few texts and rerank a query against the running api, prints similarities"
+    dir: deployables/backend
+    cmds: [go run ./cmd/demo {{.CLI_ARGS}}]
+
+  smoke:
+    desc: "end to end api check against the running api (needs BILLING_ENFORCE=false)"
+    dir: deployables/backend
+    cmds: [go run ./cmd/smoke {{.CLI_ARGS}}]
+
   down:
     desc: "stop and remove stack"
     cmds: ['{{.COMPOSE}} down']

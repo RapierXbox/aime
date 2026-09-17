@@ -20,12 +20,25 @@ import (
 	ort "github.com/yalue/onnxruntime_go"
 )
 
-// layout under MODEL_DIR: embed/{model.onnx,tokenizer.json} rerank/{model.onnx,tokenizer.json}
+// layout under MODEL_DIR: embed/ and rerank/, each with tokenizer.json and the graph as
+// model.onnx (optimum export) or onnx/model.onnx (huggingface hub layout, eg Xenova/*)
 const (
 	onnxEmbedDir  = "embed"
 	onnxRerankDir = "rerank"
 	onnxMaxSeq    = 512
 )
+
+var onnxModelFiles = []string{"model.onnx", filepath.Join("onnx", "model.onnx")}
+
+func findModelFile(dir string) (string, error) {
+	for _, name := range onnxModelFiles {
+		p := filepath.Join(dir, name)
+		if _, err := os.Stat(p); err == nil {
+			return p, nil
+		}
+	}
+	return "", fmt.Errorf("no model.onnx or onnx/model.onnx in %s", dir)
+}
 
 var ortInit struct {
 	once sync.Once
@@ -115,18 +128,22 @@ func openONNX(cfg Config) (Encoder, error) {
 
 func checkModelDir(modelDir string) error {
 	for _, sub := range []string{onnxEmbedDir, onnxRerankDir} {
-		for _, name := range []string{"model.onnx", "tokenizer.json"} {
-			p := filepath.Join(modelDir, sub, name)
-			if _, err := os.Stat(p); err != nil {
-				return fmt.Errorf("onnx backend: missing %s: %w", p, err)
-			}
+		dir := filepath.Join(modelDir, sub)
+		if _, err := findModelFile(dir); err != nil {
+			return fmt.Errorf("onnx backend: %w", err)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "tokenizer.json")); err != nil {
+			return fmt.Errorf("onnx backend: missing tokenizer.json in %s", dir)
 		}
 	}
 	return nil
 }
 
 func openModel(dir string, opts *ort.SessionOptions) (*onnxModel, error) {
-	modelPath := filepath.Join(dir, "model.onnx")
+	modelPath, err := findModelFile(dir)
+	if err != nil {
+		return nil, err
+	}
 	inputs, outputs, err := ort.GetInputOutputInfo(modelPath)
 	if err != nil {
 		return nil, err
