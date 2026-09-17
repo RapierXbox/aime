@@ -2,7 +2,7 @@
 services:
   caddy:
     ports:
-      - "${WG_ADDR}:80:80"
+      - "${WG_ADDR:?WG_ADDR must be the wireguard ip, an empty value would bind every interface}:80:80"
   grafana:
     ports:
-      - "${WG_ADDR}:3000:3000"
+      - "${WG_ADDR:?WG_ADDR must be the wireguard ip}:3000:3000"

@@ -3,6 +3,14 @@
 deployables/backend/.env
 deployables/frontend/.env
 
+# models are downloaded, never committed
+models/
+# local backup blobs
+backups/
+
+# for now :)
+docs/
+
 # go
 deployables/backend/bin/
 deployables/backend/server

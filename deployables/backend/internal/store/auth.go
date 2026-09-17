@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // errchallangeinvalid covers every reson a challange cannot be redeemed
@@ -24,7 +25,7 @@ type Session struct {
 	Expires   time.Time
 }
 
-// createChallange stores a fresh nonce for a device and returns its id
+// createChallange stores a fresh nonce for a device and returns its id. unknown device -> ErrNotFound
 func (s *Store) CreateChallenge(ctx context.Context, deviceID int64, nonce []byte, ttl time.Duration) (int64, error) {
 	var id int64
 	err := s.pool.QueryRow(ctx,
@@ -33,21 +34,26 @@ func (s *Store) CreateChallenge(ctx context.Context, deviceID int64, nonce []byt
 		 RETURNING id`,
 		deviceID, nonce, ttl.Seconds(),
 	).Scan(&id)
+
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23503" { // foreign_key_violation
+		return 0, ErrNotFound
+	}
 	return id, err
 }
 
 // consumeChallange redemms a challange exactly once and returns it
-// a second call with same id must fail even if races with the first
-func (s *Store) ConsumeChallenge(ctx context.Context, id int64) (Challenge, error) {
+// a second call with same id must fail even if races with the first.
+// ids are sequential, so the caller must also present the nonce it was given
+func (s *Store) ConsumeChallenge(ctx context.Context, id int64, nonce []byte) (Challenge, error) {
 	var deviceID int64
-	var nonce []byte
 	err := s.pool.QueryRow(ctx,
 		`UPDATE auth_challanges
 		 SET used = true
-		 WHERE id = $1 AND NOT used AND expires_at > now()
-		 RETURNING device_id, nonce`,
-		id,
-	).Scan(&deviceID, &nonce)
+		 WHERE id = $1 AND nonce = $2 AND NOT used AND expires_at > now()
+		 RETURNING device_id`,
+		id, nonce,
+	).Scan(&deviceID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Challenge{}, ErrChallengeInvalid
 	}
@@ -78,4 +84,22 @@ func (s *Store) SessionByTokenHash(ctx context.Context, tokenHash []byte) (Sessi
 		return Session{}, ErrNotFound
 	}
 	return session, err
+}
+
+// logout; an already gone token is fine
+func (s *Store) DeleteSession(ctx context.Context, tokenHash []byte) error {
+	_, err := s.pool.Exec(ctx, `DELETE FROM sessions WHERE token_hash = $1`, tokenHash)
+	return err
+}
+
+// deleteSessions revokes every session of the account; keep (a token hash) survives if not nil
+func (s *Store) DeleteSessions(ctx context.Context, accountID int64, keep []byte) (int64, error) {
+	tag, err := s.pool.Exec(ctx,
+		`DELETE FROM sessions WHERE account_id = $1 AND ($2::bytea IS NULL OR token_hash <> $2)`,
+		accountID, keep,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
 }

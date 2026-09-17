@@ -23,6 +23,30 @@ const (
 
 var dummyHash, dummySalt = auth.HashPassword("timing-defense-placeholder")
 
+const argonWait = 2 * time.Second
+
+// withArgon bounds concurrent password hashing: 64MiB each, an unbounded burst would oom the box.
+// returns false after writing a 503 when no slot frees up in time
+func (s *Server) withArgon(w http.ResponseWriter, r *http.Request, fn func()) bool {
+	select {
+	case s.argonSem <- struct{}{}:
+		defer func() { <-s.argonSem }()
+		fn()
+		return true
+	case <-time.After(argonWait):
+		w.Header().Set("Retry-After", "5")
+		s.writeError(w, http.StatusServiceUnavailable, "busy, retry shortly")
+		return false
+	case <-r.Context().Done():
+		return false
+	}
+}
+
+func validDeviceName(name string) bool {
+	n := utf8.RuneCountInString(strings.TrimSpace(name))
+	return n >= 2 && n <= 64
+}
+
 // --
 
 func NormalizeEmail(email string) (string, error) {
@@ -60,17 +84,22 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hash, salt := auth.HashPassword(req.Password)
+	var hash, salt []byte
+	if !s.withArgon(w, r, func() { hash, salt = auth.HashPassword(req.Password) }) {
+		return
+	}
 	accountID, err := s.Store.CreateAccount(r.Context(), email, hash, salt)
 	if errors.Is(err, store.ErrEmailTaken) {
 		s.writeError(w, http.StatusConflict, "email already registred")
 		return
 	}
 	if err != nil {
+		s.Log.Error("failed to create account", "error", err)
 		s.writeError(w, http.StatusInternalServerError, "internal")
 		return
 	}
 
+	s.Metrics.IncAuth("signup")
 	s.writeJSON(w, http.StatusCreated, createAccountRes{AccountID: accountID})
 }
 
@@ -99,16 +128,26 @@ func (s *Server) handleLoginPassword(w http.ResponseWriter, r *http.Request) {
 	}
 
 	acct, err := s.Store.AccountByEmail(r.Context(), email)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		// a db outage must not look like a wrong password
+		s.Log.Error("failed to load account by email", "error", err)
+		s.writeError(w, http.StatusInternalServerError, "internal")
+		return
+	}
+	hash, salt := acct.PasswordHash, acct.PasswordSalt
 	if errors.Is(err, store.ErrNotFound) {
-		auth.VerifyPassword(req.Password, dummyHash, dummySalt)
+		hash, salt = dummyHash, dummySalt // same cost as a real check
+	}
+	var valid bool
+	if !s.withArgon(w, r, func() { valid = auth.VerifyPassword(req.Password, hash, salt) }) {
+		return
+	}
+	if !valid || errors.Is(err, store.ErrNotFound) {
+		s.Metrics.IncAuth("login_fail")
 		s.writeError(w, http.StatusUnauthorized, "invalid password")
 		return
 	}
-
-	if !auth.VerifyPassword(req.Password, acct.PasswordHash, acct.PasswordSalt) {
-		s.writeError(w, http.StatusUnauthorized, "invalid password")
-		return
-	}
+	s.Metrics.IncAuth("login_ok")
 
 	token, hash := auth.NewToken()
 	err = s.Store.CreateEnrollmentToken(r.Context(), acct.ID, hash, "password", enrollmentTTL)
@@ -139,8 +178,8 @@ func (s *Server) handleCreateDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if utf8.RuneCountInString(req.Name) <= 2 {
-		s.writeError(w, http.StatusBadRequest, "name must be longer then 1")
+	if !validDeviceName(req.Name) {
+		s.writeError(w, http.StatusBadRequest, "name must be 2..64 characters")
 		return
 	}
 
@@ -167,6 +206,7 @@ func (s *Server) handleCreateDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.Metrics.IncAuth("enroll")
 	s.writeJSON(w, http.StatusCreated, createDeviceRes{DeviceID: deviceID})
 
 }
@@ -192,6 +232,10 @@ func (s *Server) handleChallange(w http.ResponseWriter, r *http.Request) {
 	rand.Read(nonce)
 
 	challangeID, err := s.Store.CreateChallenge(r.Context(), req.DeviceID, nonce, challangeTTL)
+	if errors.Is(err, store.ErrNotFound) {
+		s.writeError(w, http.StatusNotFound, "unknown device")
+		return
+	}
 	if err != nil {
 		s.Log.Error("failed to create challange", "error", err)
 		s.writeError(w, http.StatusInternalServerError, "internal")
@@ -205,6 +249,7 @@ func (s *Server) handleChallange(w http.ResponseWriter, r *http.Request) {
 
 type verifyReq struct {
 	ChallangeID int64  `json:"challange_id"`
+	Nonce       []byte `json:"nonce"` // the one from the challange; ids alone are guessable
 	Signature   []byte `json:"signature"`
 }
 
@@ -219,8 +264,13 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ch, err := s.Store.ConsumeChallenge(r.Context(), req.ChallangeID)
+	if len(req.Nonce) != 32 {
+		s.writeError(w, http.StatusBadRequest, "invalid nonce")
+		return
+	}
+	ch, err := s.Store.ConsumeChallenge(r.Context(), req.ChallangeID, req.Nonce)
 	if errors.Is(err, store.ErrChallengeInvalid) {
+		s.Metrics.IncAuth("verify_fail")
 		s.writeError(w, http.StatusBadRequest, "invalid challange")
 		return
 	}
@@ -243,9 +293,11 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 
 	err = auth.VerifyDeviceSignature(dev.PublicKey, ch.Nonce, req.Signature)
 	if err != nil {
+		s.Metrics.IncAuth("verify_fail")
 		s.writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
+	s.Metrics.IncAuth("verify_ok")
 
 	token, hash := auth.NewToken()
 	err = s.Store.CreateSession(r.Context(), dev.AccountID, dev.ID, hash, sessionTTL)
@@ -265,10 +317,21 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 
 // --
 
+type mintEnrollmentReq struct {
+	Password string `json:"password"` // adding a device is the one thing a stolen session must not be able to do
+}
+
 func (s *Server) handleMintEnrollment(w http.ResponseWriter, r *http.Request) {
 	accountID, ok := AccountFromContext(r.Context())
 	if !ok {
-		s.writeError(w, http.StatusUnauthorized, "unauthorized")
+		s.writeUnauthorized(w)
+		return
+	}
+	var req mintEnrollmentReq
+	if err := s.decodeJSON(w, r, &req); err != nil {
+		return
+	}
+	if !s.verifyAccountPassword(w, r, accountID, req.Password) {
 		return
 	}
 

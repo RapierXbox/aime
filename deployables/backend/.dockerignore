@@ -1,0 +1,5 @@
+.env
+bin/
+server
+backups/
+models/

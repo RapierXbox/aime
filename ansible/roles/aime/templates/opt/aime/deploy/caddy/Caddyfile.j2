@@ -1,4 +1,59 @@
+# rendered by ansible for {{ aime.env }}, do not edit on the server
+{
+	auto_https off
+	admin off
+}
+
 :80 {
-    encode zstd gzip
-    reverse_proxy /api/* backend:8080
+	encode zstd gzip
+
+	log {
+		output stdout
+		format json
+	}
+
+	header {
+		-Server
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy no-referrer
+	}
+
+	# backups are raw blobs, the only route allowed to be big; must come before @api
+	@backups path /v1/backups /v1/backups/*
+	handle @backups {
+		request_body {
+			max_size {{ aime.backup.max_mb }}MiB
+		}
+		header Cache-Control no-store
+		reverse_proxy backend:8080 {
+			flush_interval -1
+		}
+	}
+
+	# api. /metrics is deliberately not in the list, prometheus scrapes the backend directly
+	@api path /v1/* /healthz /readyz
+	handle @api {
+		request_body {
+			max_size 8MB
+		}
+		header Cache-Control no-store
+		reverse_proxy backend:8080 {
+			# caddy sets X-Forwarded-For to the real client; the backend trusts it (TRUST_PROXY=true)
+			health_uri /readyz
+			health_interval 15s
+		}
+	}
+
+	# built frontend, copied to /srv by deployables/frontend/Dockerfile
+	handle {
+		root * /srv
+		# vite hashes everything under /assets, so it can be cached forever
+		@assets path /assets/*
+		header @assets Cache-Control "public, max-age=31536000, immutable"
+		header /index.html Cache-Control no-cache
+		# spa: unknown paths fall back to index.html for client side routing
+		try_files {path} /index.html
+		file_server
+	}
 }

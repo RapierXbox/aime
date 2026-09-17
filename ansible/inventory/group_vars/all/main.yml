@@ -14,6 +14,9 @@ aime_defaults:
     user: aime
     db: aime
     password: "{{ vault_postgres_password }}"
+  backup:
+    max_mb: 5000 # per file, also the caddy body cap for /v1/backups
+    total_cap_gb: 40 # all accounts together, leave room for postgres on the same disk
   grafana:
     admin_user: aime
     admin_password: "{{ vault_grafana_admin_password }}"
