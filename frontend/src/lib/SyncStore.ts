@@ -2,6 +2,8 @@ import { create } from "zustand";
 import { Channel } from "@tauri-apps/api/core";
 import { commands, type Progress } from "@/bindings";
 
+// TODO: rename to TaskStore for all asynchronous global tasks
+
 type AccountSyncState = {
   status: "idle" | "syncing" | "ok" | "error";
   progress: number | null;
@@ -45,13 +47,14 @@ export const useSyncStore = create<SyncStore>()((set, get) => ({
     set_({ status: "syncing", progress: null, statusMessage: null });
 
     const req = full
+      // forcing a full sync is meant for dev only
       ? commands.devEmailFullSync(accountId, chan)
       : commands.emailSync(accountId, chan);
 
     req.then((res) => {
       set_({
         status: res.status === "ok" ? "ok" : "error",
-        statusMessage: null,
+        statusMessage: res.status === "ok" ? "Done!" : "Error occured during sync",
       });
       setTimeout(() => set_({ status: "idle", progress: null }), 5000);
     });
