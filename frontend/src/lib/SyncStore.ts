@@ -54,7 +54,6 @@ export const useSyncStore = create<SyncStore>()((set, get) => ({
     req.then((res) => {
       set_({
         status: res.status === "ok" ? "ok" : "error",
-        statusMessage: res.status === "ok" ? "Done!" : "Error occured during sync",
       });
       setTimeout(() => set_({ status: "idle", progress: null }), 5000);
     });

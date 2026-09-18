@@ -89,7 +89,6 @@ pub async fn add_account<'a, E>(
 where
     &'a E: Executor<'a, Database = Sqlite>,
 {
-    // TODO: this overwrites the account config if it already exists
     let account_config_json = serde_json::to_string(&account.config).unwrap();
     sqlx::query!(
         r#"
