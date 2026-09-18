@@ -2,7 +2,7 @@ use log::{error, info, trace};
 use tauri::ipc::Channel;
 
 use crate::email::repo::{AccountConfig, HistoryID, MessageSkeleton};
-use crate::{AppError, Progress, ProgressReporter};
+use crate::{AppError, InvalidateEvent, Progress, ProgressReporter};
 
 use super::{GmailApiError, GmailClient};
 
@@ -10,7 +10,10 @@ impl GmailClient {
     // https://developers.google.com/workspace/gmail/api/guides/sync#full-sync
     // todo: return u64
     // TODO: this misses deleted messages since the fetch_and_store_skeletons doesnt delete records that werent touched
-    pub async fn full_sync(&self, updates: Channel<Progress>) -> Result<(), AppError> {
+    pub async fn full_sync(
+        &self,
+        updates: Channel<Progress>,
+    ) -> Result<Vec<InvalidateEvent>, AppError> {
         // TODO: include spam/trash? decide: lazy sync inboxes?
 
         updates.report_message("Full Sync: Fetching Emails".into());
@@ -19,8 +22,11 @@ impl GmailClient {
 
         // refetch all messages
         updates.report_message("Loading Emails".into());
-        self.backfill_messages(self.repo.stream_all_messages().await?, updates.clone())
+        let mut events = Vec::new();
+        let status = self
+            .backfill_messages(self.repo.stream_all_messages().await?, updates.clone())
             .await?;
+        self.add_message_events(status, &mut events);
 
         info!(
             "full_sync: finished backfilling all messages for account_id={}",
@@ -44,7 +50,7 @@ impl GmailClient {
 
         self.repo.set_account_config(&new_config).await?;
 
-        Ok(())
+        Ok(events)
     }
 
     /// Synchronize and store the message skeletons from users.messages.list
@@ -93,7 +99,7 @@ impl GmailClient {
                 .messages_list("me")
                 .include_spam_trash(true)
                 .max_results(500)
-                .page_token(&token) 
+                .page_token(&token)
                 .doit()
                 .await
                 .map_err(|e| {
@@ -130,7 +136,7 @@ impl GmailClient {
         &self,
         s: MessageSkeleton,
     ) -> Result<(), AppError> {
-        let (_, msg) = self
+        let req = self
             .client
             .users()
             .messages_get("me", &s.provider_msg_id)
@@ -138,9 +144,9 @@ impl GmailClient {
                 "minimal"
             } else {
                 "full"
-            })
-            .doit()
-            .await?;
+            });
+
+        let (_, msg) = req.doit().await?;
 
         let message = GmailClient::parse_message(msg)?;
 

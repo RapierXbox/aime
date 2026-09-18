@@ -17,10 +17,10 @@ use log::warn;
 use tauri::State;
 use tokio::{fs::File, io::AsyncWriteExt, stream};
 
+use crate::email;
 use crate::email::gmail::repo::{GmailRepo, ListMessages};
 use crate::email::repo::{Label, Message};
 use crate::email::MailBox;
-use crate::email;
 use crate::{
     email::{
         repo::{AccountConfig, EmailAccount, HistoryID, MessageContents, MissingField},
@@ -203,6 +203,10 @@ impl GmailClient {
         page_index: u32,
     ) -> Result<ListMessages, AppError> {
         self.repo.list_messages(mailbox, page_index).await
+    }
+
+    pub async fn get_message(&self, msg_id: &str) -> Result<Message, AppError> {
+        self.repo.get_message(msg_id).await
     }
 }
 

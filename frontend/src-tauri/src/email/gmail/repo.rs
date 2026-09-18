@@ -8,14 +8,14 @@ use log::{error, info};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use sqlx::{Connection, Executor, Sqlite, Transaction};
-use tauri::ipc::Channel;
+use tauri::{ipc::Channel, utils::mime_type::MimeType};
 
 use crate::{
     email::{
         gmail::GmailError,
         repo::{
-            AccountConfig, AddLabelStatus, HistoryID, Label, Message, MessageContents,
-            MessageSkeleton, MissingField,
+            AccountConfig, HistoryID, Label, Message, MessageContents, MessageSkeleton,
+            MissingField, NeedsCacheInvalidate,
         },
         MailBox,
     },
@@ -49,7 +49,7 @@ impl GmailRepo {
         }
     }
 
-    pub async fn add_label(&self, label: Label) -> Result<AddLabelStatus, crate::AppError> {
+    pub async fn add_label(&self, label: Label) -> Result<NeedsCacheInvalidate, crate::AppError> {
         sqlx::query!(
             "INSERT INTO labels (account_id, id, name, message_list_visibility, label_list_visibility, type)
                 VALUES (?, ?, ?, ?, ?, ?)
@@ -65,8 +65,8 @@ impl GmailRepo {
         .execute(&self.db_pool)
         .await
         .map(|r| match r.rows_affected() {
-            0 => AddLabelStatus::AlreadyExists,
-            1 => AddLabelStatus::Inserted,
+            0 => NeedsCacheInvalidate::No,
+            1 => NeedsCacheInvalidate::Yes,
             _ => unreachable!(),
         })
         .map_err(|e| {
@@ -415,6 +415,7 @@ impl GmailRepo {
             JOIN labels AS l ON l.id = ml.label_id
                         WHERE m.account_id = ?
                 AND l.name = ?
+                ORDER BY m.internal_date DESC
                 LIMIT ? OFFSET ?"#,
             self.account_id,
             mailbox,
@@ -456,6 +457,54 @@ impl GmailRepo {
             }
         })
     }
+
+    pub(crate) async fn get_message(&self, msg_id: &str) -> Result<Message, AppError> {
+        let row = sqlx::query!(
+            r#"SELECT provider_msg_id, size_estimate as "size_estimate: i32", thread_id,
+                sync_cursor, internal_date, date_header, from_addr, to_addrs, cc_addrs,
+                subject, snippet
+            FROM messages
+            WHERE account_id = ? AND provider_msg_id = ?"#,
+            self.account_id,
+            msg_id,
+        )
+        .fetch_one(&self.db_pool)
+        .await
+        .map_err(|e| {
+            error!("in get_message: db returned error {e:?}");
+            crate::AppError::Sqlx(e.into())
+        })?;
+
+        let contents = sqlx::query_as!(
+            MessageContents,
+            "SELECT provider_msg_id, mime_type, body FROM message_contents
+            WHERE account_id = ? AND provider_msg_id = ?",
+            self.account_id,
+            msg_id,
+        )
+        .fetch_all(&self.db_pool)
+        .await
+        .map_err(|e| {
+            error!("in get_message: db returned error {e:?}");
+            crate::AppError::Sqlx(e.into())
+        })?;
+
+        Ok(Message {
+            provider_msg_id: Some(row.provider_msg_id),
+            contents,
+            label_ids: vec![], // TODO
+            size_estimate: row.size_estimate,
+            thread_id: row.thread_id,
+            sync_cursor: row.sync_cursor,
+            internal_date: row.internal_date,
+            date_header: row.date_header,
+            from_addr: row.from_addr,
+            to_addrs: row.to_addrs,
+            cc_addrs: row.cc_addrs,
+            subject: row.subject,
+            snippet: row.snippet,
+        })
+    }
 }
 
 #[derive(Debug, Type, Serialize, Deserialize)]
@@ -474,11 +523,137 @@ mod tests {
     #[test]
     fn backfill_message_coalesces_without_clobbering() {}
 
-    #[test]
-    fn list_messages_sets_next_page_param_at_page_size() {}
+    /// In-memory db with the migrations applied and `n` INBOX messages inserted
+    /// *oldest first*. Insertion order is therefore the exact reverse of what
+    /// `list_messages` must return, so an unordered query fails the assertions
+    /// instead of passing on natural rowid order.
+    async fn repo_with_inbox_messages(n: u32) -> GmailRepo {
+        let db_pool = DbPool::connect("sqlite::memory:").await.unwrap();
+        sqlx::migrate!().run(&db_pool).await.unwrap();
 
-    #[test]
-    fn list_messages_no_next_page_below_page_size() {}
+        sqlx::query!(
+            "INSERT INTO email_accounts (id, email, account_name, account_config)
+             VALUES (1, 'a@b.c', 'test', '{}')"
+        )
+        .execute(&db_pool)
+        .await
+        .unwrap();
+
+        sqlx::query!(
+            "INSERT INTO labels (account_id, id, name, type)
+             VALUES (1, 'INBOX', 'INBOX', 'system')"
+        )
+        .execute(&db_pool)
+        .await
+        .unwrap();
+
+        for i in 0..n {
+            let msg_id = format!("msg-{i:04}");
+            let internal_date = i as i64;
+            sqlx::query!(
+                "INSERT INTO messages (account_id, provider_msg_id, internal_date)
+                 VALUES (1, ?, ?)",
+                msg_id,
+                internal_date
+            )
+            .execute(&db_pool)
+            .await
+            .unwrap();
+            sqlx::query!(
+                "INSERT INTO message_has_label (account_id, provider_msg_id, label_id)
+                 VALUES (1, ?, 'INBOX')",
+                msg_id
+            )
+            .execute(&db_pool)
+            .await
+            .unwrap();
+        }
+
+        GmailRepo::new(db_pool, 1)
+    }
+
+    #[tokio::test]
+    async fn list_messages_sets_next_page_param_at_page_size() {
+        let repo = repo_with_inbox_messages(GmailRepo::PAGE_SIZE).await;
+        let page = repo.list_messages(MailBox::Inbox, 0).await.unwrap();
+
+        assert_eq!(page.messages.len(), GmailRepo::PAGE_SIZE as usize);
+        assert_eq!(page.next_page_param, Some(1));
+    }
+
+    #[tokio::test]
+    async fn list_messages_no_next_page_below_page_size() {
+        let repo = repo_with_inbox_messages(GmailRepo::PAGE_SIZE - 1).await;
+        let page = repo.list_messages(MailBox::Inbox, 0).await.unwrap();
+
+        assert_eq!(page.messages.len(), GmailRepo::PAGE_SIZE as usize - 1);
+        assert_eq!(page.next_page_param, None);
+    }
+
+    /// Paging over an unordered query silently repeats or skips rows. Guards the
+    /// explicit `ORDER BY m.internal_date DESC` that infinite scroll relies on.
+    #[tokio::test]
+    async fn list_messages_pages_do_not_overlap_and_stay_date_ordered() {
+        let total = GmailRepo::PAGE_SIZE + GmailRepo::PAGE_SIZE / 2;
+        let repo = repo_with_inbox_messages(total).await;
+
+        let first = repo.list_messages(MailBox::Inbox, 0).await.unwrap();
+        let second = repo.list_messages(MailBox::Inbox, 1).await.unwrap();
+
+        assert_eq!(second.next_page_param, None);
+
+        let all: Vec<_> = first
+            .messages
+            .iter()
+            .chain(second.messages.iter())
+            .collect();
+        assert_eq!(all.len(), total as usize);
+
+        let ids: std::collections::HashSet<_> =
+            all.iter().map(|m| m.provider_msg_id.clone()).collect();
+        assert_eq!(ids.len(), total as usize, "pages overlap");
+
+        assert!(
+            all.windows(2)
+                .all(|w| w[0].internal_date >= w[1].internal_date),
+            "not ordered by internal_date DESC across the page boundary"
+        );
+    }
+
+    /// The decoy row under a different message is what fails if the
+    /// `provider_msg_id` predicate is missing or wrong.
+    #[tokio::test]
+    async fn get_message_returns_only_its_own_contents() {
+        let repo = repo_with_inbox_messages(2).await;
+
+        for (msg_id, body) in [("msg-0000", "mine"), ("msg-0001", "decoy")] {
+            sqlx::query!(
+                "INSERT INTO message_contents (account_id, provider_msg_id, mime_type, body)
+                 VALUES (1, ?, 'text/plain', ?)",
+                msg_id,
+                body
+            )
+            .execute(&repo.db_pool)
+            .await
+            .unwrap();
+        }
+
+        let msg = repo.get_message("msg-0000").await.unwrap();
+
+        assert_eq!(msg.provider_msg_id.as_deref(), Some("msg-0000"));
+        assert_eq!(msg.internal_date, Some(0));
+        assert_eq!(msg.contents.len(), 1);
+        assert_eq!(msg.contents[0].body, "mine");
+    }
+
+    /// A skeleton row (listed, never hydrated) has no contents. The command must
+    /// still succeed so the UI can tell "not downloaded yet" from an error.
+    #[tokio::test]
+    async fn get_message_on_skeleton_returns_empty_contents() {
+        let repo = repo_with_inbox_messages(1).await;
+        let msg = repo.get_message("msg-0000").await.unwrap();
+        assert!(msg.contents.is_empty());
+    }
 
     #[test]
     fn account_config_round_trips_through_json() {}

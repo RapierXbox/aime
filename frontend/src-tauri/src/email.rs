@@ -5,7 +5,7 @@
 //! Use with `enum MailBox`
 //! They are saved as labels and attached via message_has_label
 
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use google_gmail1::{
     api::Label,
@@ -18,15 +18,19 @@ use log::{error, info};
 use oauth2::reqwest;
 use serde::{Deserialize, Serialize};
 use specta::Type;
-use tauri::{async_runtime, ipc::Channel, window::ProgressBarState, App, Manager, State};
+use tauri::{
+    async_runtime, ipc::Channel, window::ProgressBarState, App, AppHandle, Manager, State,
+};
+use tauri_specta::Event;
 use tokio::sync::Mutex;
 
 use crate::{
     email::{
         self,
         gmail::{auth::Auth, repo::ListMessages, GmailApiClient},
+        repo::Message,
     },
-    AppError, DbPool, Progress,
+    AppError, DbPool, InvalidateEvent, Progress,
 };
 
 pub mod gmail;
@@ -69,15 +73,25 @@ impl EmailManager {
 /// Loads email accounts on startup from the database
 pub fn setup(app: &mut App, db: &DbPool) -> Result<(), Box<dyn std::error::Error>> {
     // google_gmail1 uses a hyper client
+    // ponytail: legacy hyper client has no total request timeout; connect timeout +
+    // h2 keepalive catch dead connections. Wrap `.doit()` in tokio::time::timeout if slow responses hang.
+    let mut http_connector = HttpConnector::new();
+    http_connector.enforce_http(false);
+    http_connector.set_connect_timeout(Some(Duration::from_secs(10)));
     let gmail_http_client =
-        hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new()).build(
-            hyper_rustls::HttpsConnectorBuilder::new()
-                .with_native_roots()
-                .unwrap()
-                .https_or_http()
-                .enable_http2()
-                .build(),
-        );
+        hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
+            .timer(hyper_util::rt::TokioTimer::new())
+            .http2_keep_alive_interval(Duration::from_secs(30))
+            .http2_keep_alive_timeout(Duration::from_secs(10))
+            .build(
+                hyper_rustls::HttpsConnectorBuilder::new()
+                    .with_native_roots()
+                    .unwrap()
+                    .https_or_http()
+                    .enable_http2()
+                    .wrap_connector(http_connector),
+            );
+
 
     // while oauth2 uses a reqwest client,
     // so we need to deal with 2 clients right now.
@@ -167,6 +181,7 @@ pub async fn dev_email_full_sync(
     email_mng: State<'_, EmailManager>,
     update_channel: Channel<Progress>,
     db_pool: State<'_, DbPool>,
+    app: AppHandle,
 ) -> Result<(), crate::AppError> {
     info!("do_onboard_sync for {account_id}");
 
@@ -180,21 +195,30 @@ pub async fn dev_email_full_sync(
         .await
         .ok_or(AppError::AccountNotFound)?;
 
-    client.full_sync(update_channel).await
+    let events = client.full_sync(update_channel).await?;
+    emit_invalidations(&app, events);
+    Ok(())
 }
 
 #[tauri::command]
 #[specta::specta]
+/// Synchronise an Email Account
+/// for Gmail:
+/// - first tries to partial sync
+/// - fallback to full_sync
+///
+/// Invalidates Cached queries on changes
 pub async fn email_sync(
     account_id: String,
     update_channel: Channel<Progress>,
     email_mng: State<'_, EmailManager>,
+    app: AppHandle,
 ) -> Result<(), crate::AppError> {
     let account_id = account_id
         .parse::<i64>()
         .map_err(|_| crate::AppError::ParseAccountID)?;
 
-    let client = email_mng
+    let client: Arc<gmail::GmailClient> = email_mng
         .inner()
         .get_client(account_id)
         .await
@@ -202,14 +226,25 @@ pub async fn email_sync(
 
     let res = client.sync(update_channel).await;
     info!("email_sync res = {res:?}");
-    res
+
+    emit_invalidations(&app, res?);
+    Ok(())
+}
+
+/// emit every collected invalidation, a failed emit only stales the frontend cache
+fn emit_invalidations(app: &AppHandle, events: Vec<InvalidateEvent>) {
+    for e in events {
+        if let Err(err) = e.emit(app) {
+            error!("failed to emit invalidate event {e:?}: {err:?}");
+        }
+    }
 }
 
 /// return a list of message stubs
 #[tauri::command]
 #[specta::specta]
 pub async fn list_messages(
-    account_id: String,
+    account_id: &str,
     mailbox: MailBox,
     page_index: u32,
     email_mng: State<'_, EmailManager>,
@@ -218,11 +253,31 @@ pub async fn list_messages(
         .parse::<i64>()
         .map_err(|_| crate::AppError::ParseAccountID)?;
 
-    let client = email_mng
+    let client: Arc<gmail::GmailClient> = email_mng
         .inner()
         .get_client(account_id)
         .await
         .ok_or(AppError::AccountNotFound)?;
 
     client.list_messages(mailbox, page_index).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn get_message(
+    account_id: String,
+    provider_msg_id: String,
+    email_mng: State<'_, EmailManager>,
+) -> Result<Message, AppError> {
+    let account_id = account_id
+        .parse::<i64>()
+        .map_err(|_| crate::AppError::ParseAccountID)?;
+
+    let client: Arc<gmail::GmailClient> = email_mng
+        .inner()
+        .get_client(account_id)
+        .await
+        .ok_or(AppError::AccountNotFound)?;
+
+    client.get_message(&provider_msg_id).await
 }

@@ -4,7 +4,8 @@ use log::{error, info, warn};
 use tauri::ipc::Channel;
 
 use crate::email::repo::HistoryID;
-use crate::{email, AppError, Progress, ProgressReporter};
+use crate::email::repo::NeedsCacheInvalidate;
+use crate::{email, AppError, InvalidateEvent, Progress, ProgressReporter};
 
 use super::GmailClient;
 
@@ -13,7 +14,7 @@ impl GmailClient {
         &self,
         start_history_id: u64,
         updates: Channel<Progress>,
-    ) -> Result<(), AppError> {
+    ) -> Result<Vec<InvalidateEvent>, AppError> {
         // first invalidate the sync cursor to avoid failed syncs messing up data
         self.repo
             .set_account_config_sync_cursor(HistoryID::KnownStale)
@@ -38,7 +39,7 @@ impl GmailClient {
             out_of: Some(4),
         });
 
-        match res {
+        let mut events = match res {
             Err(e) => match e {
                 // on 404, we need to perform a full_sync
                 google_gmail1::Error::Failure(res)
@@ -70,7 +71,7 @@ impl GmailClient {
                         history_id_new.to_string(),
                     ))
                     .await?;
-                return Ok(());
+                return Ok(vec![]);
             }
 
             // got some history, apply it
@@ -90,21 +91,23 @@ impl GmailClient {
                     history_id_new,
                     next_page_token,
                 )
-                .await?;
+                .await?
             }
 
             Ok((d, r)) => {
                 error!("got messages.list response, didnt match correctly! r={r:#?}");
                 return Err(AppError::GmailResponseIncomplete);
             }
-        }
+        };
 
         // the added messages need to be loaded
         updates.report_message("Loading Emails".into());
-        self.backfill_messages(self.repo.stream_message_skeletons().await?, updates)
+        let status = self
+            .backfill_messages(self.repo.stream_message_skeletons().await?, updates)
             .await?;
+        self.add_message_events(status, &mut events);
 
-        Ok(())
+        Ok(events)
     }
 
     async fn apply_partial_sync_history(
@@ -114,9 +117,12 @@ impl GmailClient {
         history: Vec<History>,
         history_id_new: u64,
         next_page_token: Option<String>,
-    ) -> Result<(), AppError> {
+    ) -> Result<Vec<InvalidateEvent>, AppError> {
+        let mut events = Vec::new();
+
         // update the history we already have
-        self.repo.apply_history(history, updates.clone()).await?;
+        let status = self.repo.apply_history(history, updates.clone()).await?;
+        self.add_message_events(status, &mut events);
         // next up, check if there are more pages to fetch
 
         let mut running_page_token = next_page_token;
@@ -141,9 +147,11 @@ impl GmailClient {
                     next_page_token,
                     ..
                 } => {
-                    self.repo
+                    let status = self
+                        .repo
                         .apply_history(paged_history, updates.clone())
                         .await?;
+                    self.add_message_events(status, &mut events);
                     running_page_token = next_page_token;
                 }
 
@@ -153,11 +161,13 @@ impl GmailClient {
                     ..
                 } => {
                     updates.report_message("Loading Emails".into());
-                    self.backfill_messages(
-                        self.repo.stream_message_skeletons().await?,
-                        updates.clone(),
-                    )
-                    .await?;
+                    let status = self
+                        .backfill_messages(
+                            self.repo.stream_message_skeletons().await?,
+                            updates.clone(),
+                        )
+                        .await?;
+                    self.add_message_events(status, &mut events);
 
                     self.repo
                         .set_account_config_sync_cursor(email::repo::HistoryID::LastSynced(
@@ -165,7 +175,7 @@ impl GmailClient {
                         ))
                         .await?;
 
-                    return Ok(());
+                    return Ok(events);
                 }
 
                 _ => return Err(AppError::GmailResponseIncomplete),
@@ -179,6 +189,6 @@ impl GmailClient {
             ))
             .await?;
 
-        Ok(())
+        Ok(events)
     }
 }

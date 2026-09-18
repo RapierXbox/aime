@@ -4,9 +4,9 @@ use tauri::ipc::Channel;
 
 use crate::email::gmail::repo::MessageStream;
 use crate::email::repo::{
-    AccountConfig, AddLabelStatus, HistoryID, Label, MessageSkeleton, MissingField,
+    AccountConfig, HistoryID, Label, MessageSkeleton, MissingField, NeedsCacheInvalidate,
 };
-use crate::{AppError, Progress, ProgressReporter};
+use crate::{AppError, InvalidateEvent, Progress, ProgressReporter};
 
 use super::{GmailApiError, GmailClient, GmailError};
 
@@ -18,14 +18,22 @@ impl GmailClient {
     /// follows [https://developers.google.com/workspace/gmail/api/guides/sync]
     ///
     /// Either performs a partial sync, or if not possible, a full sync.
-    pub async fn sync(&self, update_channel: Channel<Progress>) -> Result<(), AppError> {
+    ///
+    /// Returns the frontend caches that need to be invalidated.
+    pub async fn sync(
+        &self,
+        update_channel: Channel<Progress>,
+    ) -> Result<Vec<InvalidateEvent>, AppError> {
         update_channel.report(Progress::Update {
             completed: 0,
             out_of: Some(3),
         });
 
         update_channel.report_message("Loading Labels".into());
-        self.sync_labels().await?;
+        let mut events = Vec::new();
+        if let NeedsCacheInvalidate::Yes = self.sync_labels().await? {
+            InvalidateEvent::Accounts.add_to(&mut events);
+        }
 
         update_channel.report(Progress::Update {
             completed: 1,
@@ -75,12 +83,29 @@ impl GmailClient {
             .into(),
         );
 
-        res
+        res.map(|sync_events| {
+            for e in sync_events {
+                e.add_to(&mut events);
+            }
+            events
+        })
+    }
+
+    /// collect the invalidations for all of this account's messages if `status` is Yes
+    fn add_message_events(&self, status: NeedsCacheInvalidate, events: &mut Vec<InvalidateEvent>) {
+        if let NeedsCacheInvalidate::Yes = status {
+            let account_id = self.account_id.to_string();
+            InvalidateEvent::ListMessages {
+                account_id: account_id.clone(),
+            }
+            .add_to(events);
+            InvalidateEvent::GetMessage { account_id }.add_to(events);
+        }
     }
 
     /// labels are used for sorting messages into inboxes as well as user defined labels
-    /// this function refetches the user's available labels and (will) invalidate the frontend labels query
-    async fn sync_labels(&self) -> Result<(), AppError> {
+    /// this function refetches the user's available labels and reports whether the frontend labels query must be invalidated
+    async fn sync_labels(&self) -> Result<NeedsCacheInvalidate, AppError> {
         // list the labels from the gmail api
         let (_, res) = self
             .client
@@ -98,7 +123,7 @@ impl GmailClient {
             return Err(AppError::GmailMissingLabels);
         };
 
-        let mut label_status = AddLabelStatus::AlreadyExists;
+        let mut label_status = NeedsCacheInvalidate::No;
         for label in labels {
             // extract the required fields
             let google_gmail1::api::Label {
@@ -127,24 +152,23 @@ impl GmailClient {
                 })
                 .await?;
 
-            if matches!(status, AddLabelStatus::Inserted) {
-                label_status = AddLabelStatus::Inserted;
+            if matches!(status, NeedsCacheInvalidate::Yes) {
+                label_status = NeedsCacheInvalidate::Yes;
             }
         }
 
-        if matches!(label_status, AddLabelStatus::Inserted) {
+        if matches!(label_status, NeedsCacheInvalidate::Yes) {
             info!("New Label was added");
-            // TODO: invalidate frontend labels
         }
 
-        Ok(())
+        Ok(label_status)
     }
 
     async fn backfill_messages(
         &self,
         msgs: MessageStream<impl futures::Stream<Item = Result<MessageSkeleton, AppError>>>,
         updates: Channel<Progress>,
-    ) -> Result<(), AppError> {
+    ) -> Result<NeedsCacheInvalidate, AppError> {
         let MessageStream { stream, total } = msgs;
 
         info!(
@@ -153,24 +177,33 @@ impl GmailClient {
         );
 
         let completed = std::sync::atomic::AtomicU64::new(0);
+        let mut any_stored = false;
 
         // fetch the messages in parallel and load them into the db
         stream
             .map(|it| async {
                 let s = match it {
                     Ok(s) => s,
-                    Err(e) => return error!("failed to read message skeleton: {e:?}"),
+                    Err(e) => {
+                        error!("failed to read message skeleton: {e:?}");
+                        return false;
+                    }
                 };
 
                 // gather message id for better logging
                 let id = s.provider_msg_id.clone();
 
-                if let Err(e) = self.fetch_and_store_skeleton(s).await {
-                    error!("failed to load message id={id}: {e:?}");
+                match self.fetch_and_store_skeleton(s).await {
+                    Ok(()) => true,
+                    Err(e) => {
+                        error!("failed to load message id={id}: {e:?}");
+                        false
+                    }
                 }
             })
             .buffer_unordered(GmailClient::N_FETCH_WORKERS)
-            .for_each(|()| {
+            .for_each(|stored| {
+                any_stored |= stored;
                 let n = completed.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                 updates.report(Progress::Update {
                     completed: n,
@@ -181,6 +214,10 @@ impl GmailClient {
             })
             .await;
 
-        Ok(())
+        Ok(if any_stored {
+            NeedsCacheInvalidate::Yes
+        } else {
+            NeedsCacheInvalidate::No
+        })
     }
 }

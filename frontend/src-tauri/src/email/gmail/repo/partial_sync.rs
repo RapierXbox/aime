@@ -7,6 +7,7 @@ use specta::Type;
 use sqlx::{Connection, Executor, Sqlite, Transaction};
 use tauri::ipc::Channel;
 
+use crate::email::repo::NeedsCacheInvalidate;
 use crate::{AppError, Progress, ProgressReporter};
 
 impl super::GmailRepo {
@@ -14,7 +15,7 @@ impl super::GmailRepo {
         &self,
         history: Vec<History>,
         updates: Channel<Progress>,
-    ) -> Result<(), AppError> {
+    ) -> Result<NeedsCacheInvalidate, AppError> {
         // TODO: error handling: this probably shouldnt propagate errors
         let mut tx = self.db_pool.begin().await?;
         let len = history.len() as u64;
@@ -59,7 +60,13 @@ impl super::GmailRepo {
         }
 
         tx.commit().await?;
-        Ok(())
+
+        // ponytail: any history entry counts as a change, count rows_affected if this over-invalidates
+        Ok(if len > 0 {
+            NeedsCacheInvalidate::Yes
+        } else {
+            NeedsCacheInvalidate::No
+        })
     }
 
     async fn apply_history_labels_removed(

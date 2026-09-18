@@ -12,15 +12,6 @@ use tauri_specta::Event;
 
 use crate::{email::gmail::GmailError, AppError, DbPool};
 
-#[derive(Clone, Debug, Type, Event, Serialize)]
-pub enum InvalidateEvent {
-    Accounts,
-    Messages {
-        #[specta(type = String)]
-        account_id: i64,
-    },
-}
-
 // todo: use typestate and enum to model account types
 #[derive(Debug, Clone)]
 pub struct EmailAccount {
@@ -131,9 +122,10 @@ pub struct Label {
     pub type_: String,
 }
 
-pub enum AddLabelStatus {
-    Inserted,
-    AlreadyExists,
+#[derive(Debug)]
+pub enum NeedsCacheInvalidate {
+    Yes,
+    No,
 }
 
 #[derive(Debug, Clone, Copy, Type, Serialize)]
