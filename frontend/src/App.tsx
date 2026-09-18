@@ -19,9 +19,14 @@ import {
 } from "./components/ui/dialog";
 import InboxPage from "./components/page/InboxPage";
 import { Separator } from "./components/ui/separator";
-import { MessageView } from "./components/MessageView";
+import { MessageView } from "./components/page/inbox/MessageView";
 
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
+import { RefreshCw } from "lucide-react";
+import { commands, events, type MailBox } from "@/bindings";
+import { qk } from "@/lib/queryKeys";
+import { accountSyncState, useSyncStore } from "@/lib/SyncStore";
+import { cn } from "@/lib/utils";
 
 function App() {
   // der tanstack query client
@@ -37,6 +42,35 @@ function App() {
         },
       }),
   );
+
+  // receive invalidate messages from the frontend
+  useEffect(() => {
+    events.invalidateEvent.listen(ev => {
+      if (ev.payload === "Accounts") {
+        const getMsgQk = qk.accounts;
+        queryClient.invalidateQueries({
+          queryKey: [getMsgQk],
+        });
+      } else if (ev.payload.GetMessage) {
+        const [qks, acc_id] = qk.message("", ev.payload.GetMessage.account_id);
+        const queryKey = [qks, acc_id];
+        queryClient.invalidateQueries({
+          queryKey,
+        });
+      } else if (ev.payload.ListMessages) {
+        const [qks, acc_id] = qk.inbox("", ev.payload.ListMessages.account_id);
+        const queryKey = [qks, acc_id];
+
+        queryClient.invalidateQueries({
+          queryKey,
+        });
+      } else {
+        // force a ts error when this block is non-exhaustive
+        const _exhaustiveCheck: never = ev.payload;
+        throw new Error(`Unhandled invalidate event: ${_exhaustiveCheck}`);
+      }
+    })
+  });
 
   // für automatischen dark/light mode
   // TODO: change in settings
@@ -79,12 +113,12 @@ function App() {
               className="hover:bg-border ml-1"
               color="var(--muted-foreground)"
             />
-            <span
-              id="currentPage"
-              className="font-heading text-muted-foreground mx-2 select-none ml-auto"
-            >
-              {inbox?.inboxId}
-            </span>
+            {inbox && (
+              <InboxHeaderTools
+                accountId={inbox.accountId}
+                inboxId={inbox.inboxId}
+              />
+            )}
           </header>
           <div className="flex flex-1 min-h-0">
             {/* persists component state while improving performance, hides the component while settings are open */}
@@ -98,9 +132,12 @@ function App() {
                 />
               )}
               <Separator orientation="vertical" />
-              <div className="flex-1 overflow-y-auto">
+              <div className="flex-1 min-w-0 overflow-y-auto">
                 {rightPanel ? (
-                  <MessageView message={rightPanel.message} />
+                  <MessageView
+                    accountId={rightPanel.accountId}
+                    message={rightPanel.message}
+                  />
                 ) : (
                   <div className="p-4 text-sm text-muted-foreground">
                     Select an email to view it
@@ -114,10 +151,56 @@ function App() {
       <Dialog open={!!settings} onOpenChange={(open) => !open && closeSettings()}>
         <DialogContent className="flex h-[80vh] p-0 gap-0 rounded-none sm:max-w-3xl">
           <DialogTitle className="sr-only">Settings</DialogTitle>
-          <Settings />
+          {/* Settings throws without a section; content stays mounted during the close animation */}
+          {settings && <Settings />}
         </DialogContent>
       </Dialog>
     </QueryClientProvider>
+  );
+}
+
+// account name + inbox label + sync button, top right of the app header.
+// Reuses the qk.accounts query the sidebar already populated, so this is cache-only.
+function InboxHeaderTools({
+  accountId,
+  inboxId,
+}: {
+  accountId: string;
+  inboxId: MailBox;
+}) {
+  const accounts = useQuery({
+    queryKey: qk.accounts,
+    queryFn: () =>
+      commands.emailListAccounts().then((it) => {
+        if (it.status === "error") throw it.error;
+        return it.data;
+      }),
+  });
+  const accountName = accounts.data?.find((it) => it.id === accountId)?.name;
+
+  const { status } = useSyncStore((s) => accountSyncState(s, accountId));
+  const sync = useSyncStore((s) => s.sync);
+
+  return (
+    <div className="ml-auto flex items-center gap-2 mx-2 select-none">
+      <span className="font-heading text-muted-foreground">
+        {accountName ? `${accountName} — ${inboxId}` : inboxId}
+      </span>
+      <button
+        type="button"
+        title={`Sync ${accountName ?? ""}`}
+        disabled={status === "syncing"}
+        onClick={() => sync(accountId)}
+        className="hover:bg-border p-1 cursor-pointer disabled:cursor-default"
+      >
+        <RefreshCw
+          className={cn("size-4 text-muted-foreground", {
+            "animate-spin": status === "syncing",
+            "text-destructive": status === "error",
+          })}
+        />
+      </button>
+    </div>
   );
 }
 
