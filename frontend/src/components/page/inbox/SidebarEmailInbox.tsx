@@ -5,21 +5,17 @@
 
 import { type ListEmailEntry } from "@/bindings";
 import {
-  SidebarGroup,
-  SidebarGroupContent,
   SidebarGroupLabel,
-  SidebarMenu,
   SidebarMenuSub,
   SidebarMenuSubButton,
   SidebarMenuSubItem,
-} from "./sidebar";
+} from "@/components/ui/sidebar";
 import { cn, EMAIL_INBOXES } from "@/lib/utils";
-import { Button } from "./button";
 import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
-} from "./collapsible";
+} from "@/components/ui/collapsible";
 import { ChevronDown } from "lucide-react";
 import { useNavigationStore } from "@/lib/NavigationStore";
 

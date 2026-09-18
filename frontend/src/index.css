@@ -160,3 +160,36 @@
         @apply font-sans;
     }
 }
+
+/* WKWebView doesn't paint the native macOS overlay scrollbar for nested scrollers,
+   so mimic it: thin rounded thumb, transparent track, only visible while hovering
+   the scrolling area. Styling ::-webkit-scrollbar at all opts out of overlay mode,
+   so the fade-when-idle has to be a hover rule.
+   background-color (not the background shorthand) so background-clip survives. */
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+    background-color: transparent;
+}
+
+/* 2px transparent border + content-box clip insets the thumb to ~4px, like macOS */
+::-webkit-scrollbar-thumb {
+    background-color: transparent;
+    background-clip: content-box;
+    border: 2px solid transparent;
+    border-radius: 4px;
+}
+
+/* .scrolling is toggled by the scroll listener in main.tsx */
+*:hover::-webkit-scrollbar-thumb,
+.scrolling::-webkit-scrollbar-thumb {
+    background-color: color-mix(in oklab, var(--muted-foreground) 45%, transparent);
+}
+
+*::-webkit-scrollbar-thumb:hover {
+    background-color: color-mix(in oklab, var(--muted-foreground) 75%, transparent);
+}

@@ -12,7 +12,7 @@ import {
 import { Separator } from "@/components/ui/separator";
 import { useQuery } from "@tanstack/react-query";
 import { commands } from "@/bindings";
-import SidebarEmailInbox from "./SidebarEmailInbox";
+import SidebarEmailInbox from "@/components/page/inbox/SidebarEmailInbox";
 import { qk } from "@/lib/queryKeys";
 
 export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
