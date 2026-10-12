@@ -13,7 +13,7 @@ use ::tokio::{
     net::TcpListener,
     sync::Mutex,
 };
-use google_gmail1::api::Profile;
+use google_gmail1::{api::Profile, yup_oauth2::access_token};
 use log::{error, info};
 use oauth2::{basic::BasicClient, EndpointSet, RefreshToken};
 use oauth2::{reqwest, EndpointNotSet};
@@ -22,12 +22,15 @@ use oauth2::{
     TokenResponse, TokenUrl,
 };
 use serde::Deserialize;
-use tauri::{AppHandle, Url};
+use tauri::{window::ProgressBarStatus::Error, AppHandle, Url};
 use tauri_plugin_keyring::KeyringExt;
 
 use crate::{
-    email::repo::{AccountConfig, EmailAccount},
-    KEYRING_SERVICE,
+    email::{
+        gmail,
+        repo::{AccountConfig, EmailAccount, HistoryID},
+    },
+    secret_store,
 };
 
 static CLIENT_SECRET_STR: &str = include_str!("../../../google_client_secret.json");
@@ -56,6 +59,7 @@ static CLIENT_SECRET: LazyLock<OAuthConfig> = LazyLock::new(|| {
 
 #[derive(Clone, Debug)]
 struct TokenInfo {
+    // TODO: replace with AccessToken type
     pub access_token: String,
     pub refresh_token: RefreshToken,
     pub expires_on: SystemTime,
@@ -88,7 +92,7 @@ impl google_gmail1::common::GetToken for TempAuth {
 }
 
 impl TempAuth {
-    pub async fn do_oauth2_flow(http_client: reqwest::Client) -> Result<Self, crate::Error> {
+    pub async fn do_oauth2_flow(http_client: reqwest::Client) -> Result<Self, crate::AppError> {
         oauth2_flow(http_client).await
     }
 
@@ -114,28 +118,31 @@ impl TempAuth {
         &self,
         app: &tauri::AppHandle,
         email_addr: &str,
-    ) -> Result<(), crate::Error> {
-        app.keyring()
-            .set_password(
-                KEYRING_SERVICE,
-                &fmt_keyring_usr(email_addr),
-                self.token.refresh_token.secret(),
-            )
-            .inspect_err(|e| info!("could not save {:?} to keyring: {:?}", email_addr, e))
-            .map_err(|_| crate::Error::KeyringSaveError)
+    ) -> Result<(), crate::AppError> {
+        secret_store::set_password(
+            app,
+            &secret_store::fmt_gmail_keyring_user(email_addr),
+            self.token.refresh_token.secret(),
+        )
     }
 }
 
-/// Get the keyring key/username for a given email address. Should store the refresh token.
-fn fmt_keyring_usr(email_addr: &str) -> String {
-    format!("gmail:refresh:{}", email_addr)
-}
-
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Auth {
     // Auth internally refreshes the token when it expires,
     // sharing the same auth state across all threads
     inner: Arc<Inner>,
+}
+
+impl std::fmt::Debug for Auth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Auth")
+            .field("token", &self.inner.token)
+            .field("profile", &self.inner.profile)
+            .field("oauth_client", &self.inner.oauth_client)
+            .field("http_client", &"reqwest::Client")
+            .finish()
+    }
 }
 
 /// Manages Authorization state
@@ -162,32 +169,33 @@ impl google_gmail1::common::GetToken for Auth {
 
 impl Auth {
     /// Ensures refreshed credentials are available
-    async fn ensure_refresh(&self) -> Result<(), crate::Error> {
+    async fn ensure_refresh(&self) -> Result<(), crate::AppError> {
         self.inner.enshure_refresh().await
     }
 
     // todo: this api should use typestate to ensure the account is a gmail account
-    pub fn reinstantiate(
+    pub fn new(
         app: &AppHandle,
         account: EmailAccount,
         http_client: reqwest::Client,
-    ) -> Result<Self, crate::Error> {
+    ) -> Result<Self, crate::AppError> {
         // load refresh token from keyring
-        let res = app
-            .keyring()
-            .get_password(KEYRING_SERVICE, &fmt_keyring_usr(&account.email));
+        let res =
+            secret_store::get_password(app, &secret_store::fmt_gmail_keyring_user(&account.email));
+
         let refresh_token = match res {
             Ok(Some(token)) => RefreshToken::new(token),
             Ok(None) | Err(_) => {
                 info!("could not load {:?} from keyring: {:?}", account, res);
-                return Err(crate::Error::KeyringLoadError);
+                return Err(crate::AppError::KeyringLoadError);
             }
         };
 
         // TODO: remove in favor of typestate
-        let (history_id, scopes) = match account.account_config {
-            AccountConfig::Gmail { history_id, scopes } => (history_id, scopes),
-        };
+        let AccountConfig::Gmail {
+            history_id: _,
+            scopes,
+        } = account.config;
 
         let s = Self {
             inner: Arc::new(Inner {
@@ -201,9 +209,11 @@ impl Auth {
                 }),
                 profile: Profile {
                     email_address: Some(account.email),
-                    history_id: Some(history_id),
-                    // TODO: check if needed to be set
+                    // TODO: check if needed
+                    history_id: None,
+                    // TODO: check if needed
                     messages_total: None,
+
                     threads_total: None,
                 },
                 oauth_client: create_oauth2_client(None)?,
@@ -217,7 +227,7 @@ impl Auth {
 
 impl Inner {
     /// Ensures refreshed credentials
-    async fn enshure_refresh(&self) -> Result<(), crate::Error> {
+    async fn enshure_refresh(&self) -> Result<(), crate::AppError> {
         let mut token = self.token.lock().await;
 
         // if the expiry date is within than 60 seconds from now, refresh the token
@@ -236,16 +246,23 @@ impl Inner {
         }
     }
 
-    async fn refresh(&self, token: &mut TokenInfo) -> Result<(), crate::Error> {
+    async fn refresh(&self, token: &mut TokenInfo) -> Result<(), crate::AppError> {
+        info!("Refreshing token for {:?}", token);
+
         let res = self
             .oauth_client
             .exchange_refresh_token(&token.refresh_token)
             .request_async(&self.http_client)
             .await
             .expect("TODO refresh token failed");
-        let new_refresh_token = res.refresh_token().unwrap().clone();
 
-        token.refresh_token = new_refresh_token;
+        info!("received {res:?}");
+
+        let new_access_token = res.access_token().clone();
+
+        token.access_token = new_access_token.into_secret();
+        token.expires_on =
+            SystemTime::now() + res.expires_in().unwrap_or(Duration::from_secs(3600));
         Ok(())
     }
 }
@@ -264,11 +281,18 @@ type OAuthClient = BasicClient<
 /// TODO:
 /// - Errors from [https://developers.google.com/identity/protocols/oauth2/native-app#authorization-errors]
 /// - implement Dpop [https://developers.google.com/identity/protocols/oauth2/native-app#constructing-dpop-proof]
-async fn oauth2_flow(http_client: reqwest::Client) -> Result<TempAuth, crate::Error> {
+async fn oauth2_flow(http_client: reqwest::Client) -> Result<TempAuth, crate::AppError> {
     // listen for the local redirect on an ephemeral port
 
-    let tcp_listener = TcpListener::bind("127.0.0.1:0").await?;
-    let local_addr = tcp_listener.local_addr()?;
+    let tcp_listener = TcpListener::bind("127.0.0.1:0").await.map_err(|e| {
+        error!("while binding tcp listener: {e:#?}");
+        gmail::GmailError::OauthTcpListen
+    })?;
+
+    let local_addr = tcp_listener.local_addr().map_err(|e| {
+        error!("while getting local addr: {e:#?}");
+        gmail::GmailError::OauthTcpListen
+    })?;
 
     let client = create_oauth2_client(Some(local_addr))?;
 
@@ -286,21 +310,35 @@ async fn oauth2_flow(http_client: reqwest::Client) -> Result<TempAuth, crate::Er
         .url();
 
     // Open the authorization URL in the user's browser.
-    open::that(auth_url.as_str())?;
+    open::that(auth_url.as_str()).map_err(|e| {
+        error!("while reading oauth2 redirect: {e:#?}");
+        gmail::GmailError::OauthRedirect
+    })?;
 
     // Wait for the user to complete the authorization process.
-    let (stream, _) = tcp_listener.accept().await?;
+    let (stream, _) = tcp_listener.accept().await.map_err(|e| {
+        error!("while waiting for oauth2 redirect stream connection: {e:#?}");
+        gmail::GmailError::OauthRedirect
+    })?;
 
     let mut reader = BufReader::new(stream);
     let mut buf = String::new();
     // Read the first line of the response
-    reader.read_line(&mut buf).await?;
-    println!("got={}", buf);
+    reader.read_line(&mut buf).await.map_err(|e| {
+        error!("while reading oauth2 redirect: {e:#?}");
+        gmail::GmailError::OauthRedirect
+    })?;
+
+    info!("first line oauth2 redirect response got={}", buf);
     // respond with a 200 OK
     reader
         .into_inner() // respond with a small html page
         .write_all(b"HTTP/1.1 200 OK\nContent-Type: text/html\nContent-Length: 57\n\n<html><body><h1>You may return to aime</h1></body></html>")
-        .await?;
+        .await
+        .map_err(|e| {
+            error!("io error while responding to oauth2 redirect: {e:#?}");
+            gmail::GmailError::OauthHttpResp
+        })?;
 
     // now in buf: "GET /?state=...&iss=...&code=...&scope=... HTTP/1.1"
     let endpoint = buf
@@ -333,7 +371,7 @@ async fn oauth2_flow(http_client: reqwest::Client) -> Result<TempAuth, crate::Er
         .await
         .map_err(|e| {
             error!("{e}");
-            crate::Error::OAuth
+            crate::AppError::OAuth
         })
         .expect("token response should be ok");
 
@@ -372,11 +410,17 @@ async fn oauth2_flow(http_client: reqwest::Client) -> Result<TempAuth, crate::Er
 // since its ephemeral right now, we need a different solution eventually
 fn create_oauth2_client(
     local_redirect_addr: Option<std::net::SocketAddr>,
-) -> Result<OAuthClient, crate::Error> {
+) -> Result<OAuthClient, crate::AppError> {
     let client =
         oauth2::basic::BasicClient::new(ClientId::new(CLIENT_SECRET.client_id.to_string()))
-            .set_auth_uri(AuthUrl::new(CLIENT_SECRET.auth_uri.to_string())?)
-            .set_token_uri(TokenUrl::new(CLIENT_SECRET.token_uri.to_string())?)
+            .set_auth_uri(
+                AuthUrl::new(CLIENT_SECRET.auth_uri.to_string())
+                    .map_err(|_| gmail::GmailError::AuthUrlParse)?,
+            )
+            .set_token_uri(
+                TokenUrl::new(CLIENT_SECRET.token_uri.to_string())
+                    .map_err(|_| gmail::GmailError::TokenUrlParse)?,
+            )
             .set_client_secret(oauth2::ClientSecret::new(
                 CLIENT_SECRET.client_secret.to_string(),
             ));
@@ -384,7 +428,11 @@ fn create_oauth2_client(
 
     match local_redirect_addr {
         Some(addr) => {
-            let client = client.set_redirect_uri(RedirectUrl::new(format!("http://{addr}"))?);
+            let client = client.set_redirect_uri(
+                // TODO: add err variant
+                RedirectUrl::new(format!("http://{addr}"))
+                    .map_err(|_| gmail::GmailError::RedirectUrlParse)?,
+            );
             Ok(client)
         }
         None => Ok(client),
