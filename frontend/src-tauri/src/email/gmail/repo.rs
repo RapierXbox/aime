@@ -1,4 +1,4 @@
-use std::{marker::PhantomData, process::Output};
+use std::{collections::HashMap, marker::PhantomData, process::Output};
 
 use futures::StreamExt;
 use google_gmail1::api::{
@@ -7,7 +7,7 @@ use google_gmail1::api::{
 use log::{error, info};
 use serde::{Deserialize, Serialize};
 use specta::Type;
-use sqlx::{Connection, Executor, Sqlite, Transaction};
+use sqlx::{Connection, Executor, QueryBuilder, Sqlite, Transaction};
 use tauri::{ipc::Channel, utils::mime_type::MimeType};
 
 use crate::{
@@ -387,7 +387,6 @@ impl GmailRepo {
 
     const PAGE_SIZE: u32 = 100;
 
-    // TODO: return labels? (extra query per message), read status
     /// List messages in the mailbox, with pagination via page index.
     /// Returns at most [`Self::PAGE_SIZE`] messages, offset by `page_index` (=> real offset is `page_index * Self::PAGE_SIZE`).
     pub async fn list_messages(
@@ -396,8 +395,9 @@ impl GmailRepo {
         page_index: u32,
     ) -> Result<ListMessages, AppError> {
         let page_offset = page_index * Self::PAGE_SIZE;
+        let mut tx = self.db_pool.begin().await?;
 
-        sqlx::query!(
+        let rows = sqlx::query!(
             r#"SELECT ROW_NUMBER() OVER (ORDER BY internal_date DESC) AS "row_num!: i64",
                 m.provider_msg_id,
                 m.size_estimate as "size_estimate: i32",
@@ -411,9 +411,10 @@ impl GmailRepo {
                 m.subject,
                 m.snippet
             FROM messages AS m
-            JOIN message_has_label AS ml ON ml.provider_msg_id = m.provider_msg_id
-            JOIN labels AS l ON l.id = ml.label_id
-                        WHERE m.account_id = ?
+            JOIN message_has_label AS ml ON ml.account_id = m.account_id
+                AND ml.provider_msg_id = m.provider_msg_id
+            JOIN labels AS l ON l.account_id = ml.account_id AND l.id = ml.label_id
+            WHERE m.account_id = ?
                 AND l.name = ?
                 ORDER BY m.internal_date DESC
                 LIMIT ? OFFSET ?"#,
@@ -422,25 +423,49 @@ impl GmailRepo {
             Self::PAGE_SIZE,
             page_offset
         )
-        .fetch_all(&self.db_pool)
+        .fetch_all(&mut *tx)
         .await
         .map_err(|e| {
             error!("in list_messages: db returned error {e:?}");
             crate::AppError::Sqlx(e.into())
-        })
-        .map(|it| {
-            ListMessages {
-                next_page_param: if it.len() == Self::PAGE_SIZE as usize {
-                    Some(page_index + 1)
-                } else {
-                    None
-                },
+        })?;
 
-                messages: it
-                    .into_iter()
-                    .map(|re| Message {
+        let mut labels: HashMap<String, Vec<String>> = HashMap::new();
+        if !rows.is_empty() {
+            let mut query = QueryBuilder::<Sqlite>::new(
+                "SELECT provider_msg_id, label_id FROM message_has_label WHERE account_id = ",
+            );
+            query
+                .push_bind(self.account_id)
+                .push(" AND provider_msg_id IN (");
+            let mut ids = query.separated(", ");
+            for row in &rows {
+                ids.push_bind(&row.provider_msg_id);
+            }
+            ids.push_unseparated(")");
+
+            for (msg_id, label_id) in query
+                .build_query_as::<(String, String)>()
+                .fetch_all(&mut *tx)
+                .await?
+            {
+                labels.entry(msg_id).or_default().push(label_id);
+            }
+        }
+
+        let result = ListMessages {
+            next_page_param: if rows.len() == Self::PAGE_SIZE as usize {
+                Some(page_index + 1)
+            } else {
+                None
+            },
+            messages: rows
+                .into_iter()
+                .map(|re| {
+                    let label_ids = labels.remove(&re.provider_msg_id).unwrap_or_default();
+                    Message {
                         provider_msg_id: Some(re.provider_msg_id),
-                        label_ids: vec![], // TODO
+                        label_ids,
                         contents: vec![],
                         size_estimate: re.size_estimate,
                         thread_id: re.thread_id,
@@ -452,13 +477,17 @@ impl GmailRepo {
                         cc_addrs: re.cc_addrs,
                         subject: re.subject,
                         snippet: re.snippet,
-                    })
-                    .collect(),
-            }
-        })
+                    }
+                })
+                .collect(),
+        };
+
+        tx.commit().await?;
+        Ok(result)
     }
 
     pub(crate) async fn get_message(&self, msg_id: &str) -> Result<Message, AppError> {
+        let mut tx = self.db_pool.begin().await?;
         let row = sqlx::query!(
             r#"SELECT provider_msg_id, size_estimate as "size_estimate: i32", thread_id,
                 sync_cursor, internal_date, date_header, from_addr, to_addrs, cc_addrs,
@@ -468,7 +497,7 @@ impl GmailRepo {
             self.account_id,
             msg_id,
         )
-        .fetch_one(&self.db_pool)
+        .fetch_one(&mut *tx)
         .await
         .map_err(|e| {
             error!("in get_message: db returned error {e:?}");
@@ -482,17 +511,28 @@ impl GmailRepo {
             self.account_id,
             msg_id,
         )
-        .fetch_all(&self.db_pool)
+        .fetch_all(&mut *tx)
         .await
         .map_err(|e| {
             error!("in get_message: db returned error {e:?}");
             crate::AppError::Sqlx(e.into())
         })?;
 
+        let label_ids = sqlx::query_scalar!(
+            "SELECT label_id FROM message_has_label
+             WHERE account_id = ? AND provider_msg_id = ?",
+            self.account_id,
+            msg_id,
+        )
+        .fetch_all(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+
         Ok(Message {
             provider_msg_id: Some(row.provider_msg_id),
             contents,
-            label_ids: vec![], // TODO
+            label_ids,
             size_estimate: row.size_estimate,
             thread_id: row.thread_id,
             sync_cursor: row.sync_cursor,
@@ -588,6 +628,171 @@ mod tests {
 
         assert_eq!(page.messages.len(), GmailRepo::PAGE_SIZE as usize - 1);
         assert_eq!(page.next_page_param, None);
+    }
+
+    #[tokio::test]
+    async fn list_messages_attaches_labels_to_each_page() {
+        let repo = repo_with_inbox_messages(GmailRepo::PAGE_SIZE + 1).await;
+        for label in ["UNREAD", "STARRED"] {
+            sqlx::query(
+                "INSERT INTO labels (account_id, id, name, type) VALUES (1, ?, ?, 'system')",
+            )
+            .bind(label)
+            .bind(label)
+            .execute(&repo.db_pool)
+            .await
+            .unwrap();
+        }
+        for (msg_id, label) in [
+            ("msg-0000", "UNREAD"),
+            ("msg-0100", "UNREAD"),
+            ("msg-0100", "STARRED"),
+        ] {
+            sqlx::query(
+                "INSERT INTO message_has_label (account_id, provider_msg_id, label_id)
+                 VALUES (1, ?, ?)",
+            )
+            .bind(msg_id)
+            .bind(label)
+            .execute(&repo.db_pool)
+            .await
+            .unwrap();
+        }
+
+        let first = repo.list_messages(MailBox::Inbox, 0).await.unwrap();
+        let second = repo.list_messages(MailBox::Inbox, 1).await.unwrap();
+        assert_eq!(first.messages.len(), GmailRepo::PAGE_SIZE as usize);
+        assert_eq!(second.messages.len(), 1);
+        for message in first.messages.iter().chain(&second.messages) {
+            let msg_id = message.provider_msg_id.as_deref().unwrap();
+            let mut labels = message.label_ids.clone();
+            labels.sort();
+            match msg_id {
+                "msg-0100" => assert_eq!(labels, ["INBOX", "STARRED", "UNREAD"]),
+                "msg-0000" => assert_eq!(labels, ["INBOX", "UNREAD"]),
+                _ => assert_eq!(labels, ["INBOX"]),
+            }
+        }
+
+        let empty = repo.list_messages(MailBox::Inbox, 2).await.unwrap();
+        assert!(empty.messages.is_empty());
+        assert_eq!(empty.next_page_param, None);
+    }
+
+    #[tokio::test]
+    async fn message_labels_and_mailbox_membership_are_account_scoped() {
+        let repo = repo_with_inbox_messages(2).await;
+        sqlx::query(
+            "DELETE FROM message_has_label WHERE account_id = 1 AND provider_msg_id = 'msg-0001'",
+        )
+        .execute(&repo.db_pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO email_accounts (id, email, account_name, account_config)
+             VALUES (2, 'other@b.c', 'other', '{}')",
+        )
+        .execute(&repo.db_pool)
+        .await
+        .unwrap();
+        for label in ["INBOX", "UNREAD"] {
+            sqlx::query(
+                "INSERT INTO labels (account_id, id, name, type) VALUES (2, ?, ?, 'system')",
+            )
+            .bind(label)
+            .bind(label)
+            .execute(&repo.db_pool)
+            .await
+            .unwrap();
+        }
+        for msg_id in ["msg-0000", "msg-0001"] {
+            sqlx::query(
+                "INSERT INTO messages (account_id, provider_msg_id, internal_date) VALUES (2, ?, 42)",
+            )
+            .bind(msg_id)
+            .execute(&repo.db_pool)
+            .await
+            .unwrap();
+            for label in ["INBOX", "UNREAD"] {
+                sqlx::query(
+                    "INSERT INTO message_has_label (account_id, provider_msg_id, label_id)
+                     VALUES (2, ?, ?)",
+                )
+                .bind(msg_id)
+                .bind(label)
+                .execute(&repo.db_pool)
+                .await
+                .unwrap();
+            }
+        }
+
+        let page = repo.list_messages(MailBox::Inbox, 0).await.unwrap();
+        assert_eq!(page.messages.len(), 1);
+        assert_eq!(
+            page.messages[0].provider_msg_id.as_deref(),
+            Some("msg-0000")
+        );
+        assert_eq!(page.messages[0].label_ids, ["INBOX"]);
+        assert_eq!(
+            repo.get_message("msg-0000").await.unwrap().label_ids,
+            ["INBOX"]
+        );
+        assert!(repo
+            .get_message("msg-0001")
+            .await
+            .unwrap()
+            .label_ids
+            .is_empty());
+
+        let other = GmailRepo::new(repo.db_pool.clone(), 2);
+        let other_page = other.list_messages(MailBox::Inbox, 0).await.unwrap();
+        assert_eq!(other_page.messages.len(), 2);
+        assert!(other_page
+            .messages
+            .iter()
+            .all(|m| m.label_ids.contains(&"UNREAD".into())));
+    }
+
+    #[tokio::test]
+    async fn fetching_unread_message_preserves_stored_labels() {
+        let repo = repo_with_inbox_messages(1).await;
+        sqlx::query(
+            "INSERT INTO labels (account_id, id, name, type) VALUES (1, 'UNREAD', 'UNREAD', 'system')",
+        )
+        .execute(&repo.db_pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO message_has_label (account_id, provider_msg_id, label_id)
+             VALUES (1, 'msg-0000', 'UNREAD')",
+        )
+        .execute(&repo.db_pool)
+        .await
+        .unwrap();
+
+        let message = repo.get_message("msg-0000").await.unwrap();
+        assert!(message.label_ids.contains(&"UNREAD".into()));
+        let unread_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM message_has_label
+             WHERE account_id = 1 AND provider_msg_id = 'msg-0000' AND label_id = 'UNREAD'",
+        )
+        .fetch_one(&repo.db_pool)
+        .await
+        .unwrap();
+        assert_eq!(unread_count, 1);
+        let page = repo.list_messages(MailBox::Inbox, 0).await.unwrap();
+        assert!(page.messages[0].label_ids.contains(&"UNREAD".into()));
+
+        // A later sync can remove UNREAD; the next list read must reflect it.
+        sqlx::query(
+            "DELETE FROM message_has_label
+             WHERE account_id = 1 AND provider_msg_id = 'msg-0000' AND label_id = 'UNREAD'",
+        )
+        .execute(&repo.db_pool)
+        .await
+        .unwrap();
+        let refreshed = repo.list_messages(MailBox::Inbox, 0).await.unwrap();
+        assert_eq!(refreshed.messages[0].label_ids, ["INBOX"]);
     }
 
     /// Paging over an unordered query silently repeats or skips rows. Guards the

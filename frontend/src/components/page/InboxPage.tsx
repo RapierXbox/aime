@@ -128,11 +128,19 @@ const EmailPreview: React.FC<{
       })}
       onClick={onSelect}
     >
-      <div className="flex">
-        <p className="font-semibold text-sm line-clamp-1 select-none">
+      <div className="flex items-center">
+        {message.label_ids.includes("UNREAD") && (
+          <span
+            className="size-2 shrink-0 rounded-full bg-primary mr-2"
+            title="Unread"
+          >
+            <span className="sr-only">Unread</span>
+          </span>
+        )}
+        <p className="min-w-0 font-semibold text-sm line-clamp-1 select-none">
           {displayName(message.from_addr)}
         </p>
-        <p className="text-xs ml-auto text-muted-foreground select-none">
+        <p className="shrink-0 text-xs ml-auto text-muted-foreground select-none">
           {formatDateHeader(parsed)}
         </p>
       </div>
