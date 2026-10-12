@@ -1,0 +1,9 @@
+[Interface]
+Address = {{ aime.wg.address }}/32
+PrivateKey = {{ server_private_key }}
+
+[Peer]
+PublicKey = {{ aime.wg.hub.public_key }}
+Endpoint = {{ aime.wg.hub.endpoint }}
+AllowedIPs = {{ aime.wg.hub.allowed_ips }}
+PersistentKeepalive = 25

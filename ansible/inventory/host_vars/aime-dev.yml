@@ -1,0 +1,4 @@
+# ansible_host: <ip reachable from where you run ansible; the wg address once the tunnel is up>
+aime_host:
+  wg:
+    address: "10.10.0.101"

@@ -1,0 +1,4 @@
+aime_group:
+  env: prod
+  repo:
+    version: main

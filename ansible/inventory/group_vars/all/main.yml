@@ -1,0 +1,27 @@
+# everything is read as aime.<section>.<key>
+# ansible replaces dicts across all -> group -> host instead of merging them,
+# so the tree is assembled here from three layers:
+#   aime_defaults  (this file)          shared by every host
+#   aime_group     (group_vars/<env>)   per environment
+#   aime_host      (host_vars/<host>)   per machine
+aime: "{{ aime_defaults | combine(aime_group | default({}), aime_host | default({}), recursive=true) }}"
+
+aime_defaults:
+  app_dir: /opt/aime
+  repo:
+    url: "git@github.com:RapierXbox/aime.git"
+  postgres:
+    user: aime
+    db: aime
+    password: "{{ vault_postgres_password }}"
+  backup:
+    max_mb: 5000 # per file, also the caddy body cap for /v1/backups
+    total_cap_gb: 40 # all accounts together, leave room for postgres on the same disk
+  grafana:
+    admin_user: aime
+    admin_password: "{{ vault_grafana_admin_password }}"
+  wg:
+    hub:
+      public_key: "VOLlfoah9H/y/1ICbGGJd4oVdnJKs8d1is4ZnP5YUW8="
+      endpoint: "codeclub.check24.fun:51820"
+      allowed_ips: "172.16.67.0/24"

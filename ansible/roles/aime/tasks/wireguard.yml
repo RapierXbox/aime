@@ -1,0 +1,54 @@
+- name: Install wireguard
+  ansible.builtin.apt:
+    name: [wireguard, wireguard-tools]
+    state: present
+    update_cache: true
+
+- name: Ensure /etc/wireguard exists
+  ansible.builtin.file:
+    path: /etc/wireguard
+    state: directory
+    mode: "0700"
+
+- name: Generate private key if missing
+  ansible.builtin.shell: umask 077 && wg genkey > /etc/wireguard/privatekey
+  args:
+    creates: /etc/wireguard/privatekey
+  no_log: true
+
+- name: Lock down private key
+  ansible.builtin.file:
+    path: /etc/wireguard/privatekey
+    mode: "0600"
+
+- name: Read private key
+  ansible.builtin.slurp:
+    src: /etc/wireguard/privatekey
+  register: wg_privkey
+  no_log: true
+
+# reads the key from the file so it never shows up in a command line or log
+- name: Derive this hosts public key
+  ansible.builtin.shell: wg pubkey < /etc/wireguard/privatekey
+  register: wg_pubkey
+  changed_when: false
+
+- name: Show public key (register this peer on the hub)
+  ansible.builtin.debug:
+    msg: "PublicKey={{ wg_pubkey.stdout }} AllowedIPs={{ aime.wg.address }}/32"
+
+- name: Render wg0.conf
+  ansible.builtin.template:
+    src: etc/wireguard/wg0.conf.j2
+    dest: /etc/wireguard/wg0.conf
+    mode: "0600"
+  vars:
+    server_private_key: "{{ wg_privkey.content | b64decode | trim }}"
+  no_log: true
+  notify: aime.wireguard.restart
+
+- name: Enable and start the tunnel
+  ansible.builtin.systemd:
+    name: wg-quick@wg0
+    enabled: true
+    state: started

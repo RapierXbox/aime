@@ -1,0 +1,5 @@
+- name: Deploy AIME
+  hosts: all
+  become: true
+  roles:
+    - aime

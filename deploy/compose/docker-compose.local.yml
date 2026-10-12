@@ -1,0 +1,6 @@
+# local dev / demo overlay: talk to the backend directly, no caddy needed
+#   docker compose --env-file .env -f deploy/compose/docker-compose.yml -f deploy/compose/docker-compose.local.yml up -d --build
+services:
+  backend:
+    ports:
+      - "127.0.0.1:8080:8080"

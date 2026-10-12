@@ -1,0 +1,13 @@
+# one role, three stages. run everything for a fresh box or only one stage via tags:
+#   ansible-playbook playbook.yml --limit prod --tags deploy
+- name: Install docker engine + compose plugin
+  ansible.builtin.import_tasks: docker.yml
+  tags: [docker, bootstrap]
+
+- name: Bring up the wireguard tunnel (before compose binds to its ip)
+  ansible.builtin.import_tasks: wireguard.yml
+  tags: [wireguard, bootstrap]
+
+- name: Deploy the compose stack
+  ansible.builtin.import_tasks: deploy.yml
+  tags: [deploy]

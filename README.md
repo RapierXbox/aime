@@ -17,7 +17,26 @@ AIME is the best and most secure way to add a knowlageable to your existing job 
     - Tauri + React SPA (vite, tailwind, shadcn/ui)
 - Deployed using Ansible and Docker Compose
 
+### Layout:
+- `deployables/backend` - Go API (see its go.mod, module path stays `github.com/rapierxbox/aime/backend`)
+- `deployables/frontend` - Tauri + React app
+- `deploy/` - docker compose stack, caddy, prometheus, grafana
+- `ansible/` - server provisioning + deploy playbook
+
 ### Getting Started:
 Install https://taskfile.dev
 run *task* to see all commands
 run *task setup* to setup everything
+
+
+### Auth
+the auth conists of two main parts, both of which are pq.
+#### master backup key
+this is a on device generated 128bit key used for encrypting your backups. this is never send in any way to the server.
+you can transfer it to other devices via a qr code. 24 words or via your icloud keychain. if possible its encryptet in storage via biometrics.
+#### devices sessions and enrollment
+do enroll a new device you can create a enrollment token. its single use and has a short ttl. it can be generated via account password, a qr from another device or a mail link. then you generate a public and private keypair on your device. you then enroll your device using the public key and a enrollment token. 
+when you then want to pull a backup or use a encoding endpoint you can use your public key with your device id to generate a session token by generating a challange and solving it with your sk. its also possible to disable some login methods for more security. 
+
+### Billing
+1 Credit = 1000000 uCredits (microcredits)(uC). all prices are in uC per 1000 input tokens. the charge happens after inferance so the account balance can be negative. then the next call will jsut not work
