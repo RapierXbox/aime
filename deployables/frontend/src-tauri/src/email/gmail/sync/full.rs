@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use log::{error, info, trace};
 use tauri::ipc::Channel;
 
@@ -9,20 +11,37 @@ use super::{GmailApiError, GmailClient};
 impl GmailClient {
     // https://developers.google.com/workspace/gmail/api/guides/sync#full-sync
     // todo: return u64
-    // TODO: this misses deleted messages since the fetch_and_store_skeletons doesnt delete records that werent touched
     pub async fn full_sync(
         &self,
         updates: Channel<Progress>,
     ) -> Result<Vec<InvalidateEvent>, AppError> {
         // TODO: include spam/trash? decide: lazy sync inboxes?
 
+        // capture the mailbox historyId BEFORE listing, so changes made mid-sync aren't lost
+        let (_, profile) = self
+            .client
+            .users()
+            .get_profile("me")
+            .doit()
+            .await
+            .map_err(GmailApiError::from)?;
+        let Some(history_id) = profile.history_id else {
+            error!("get_profile returned no history_id {profile:#?}");
+            return Err(AppError::GmailResponseIncomplete);
+        };
+
         updates.report_message("Full Sync: Fetching Emails".into());
-        self.fetch_and_store_message_skeletons(updates.clone())
+        let listed_ids = self
+            .fetch_and_store_message_skeletons(updates.clone())
             .await?;
+
+        let mut events = Vec::new();
+        // drop messages deleted remotely, before backfill so they aren't refetched
+        let status = self.repo.delete_messages_not_in(&listed_ids).await?;
+        self.add_message_events(status, &mut events);
 
         // refetch all messages
         updates.report_message("Loading Emails".into());
-        let mut events = Vec::new();
         let status = self
             .backfill_messages(self.repo.stream_all_messages().await?, updates.clone())
             .await?;
@@ -32,14 +51,12 @@ impl GmailClient {
             "full_sync: finished backfilling all messages for account_id={}",
             self.account_id
         );
-        // todo: should be the the first message in the messages.list response
-        let latest_history_id = self.repo.get_latest_sync_cursor().await?;
         let config = self.repo.get_account_config().await?;
 
         let AccountConfig::Gmail { scopes, .. } = config;
 
         let new_config = AccountConfig::Gmail {
-            history_id: HistoryID::LastSynced(latest_history_id),
+            history_id: HistoryID::LastSynced(history_id.to_string()),
             scopes,
         };
 
@@ -53,11 +70,12 @@ impl GmailClient {
         Ok(events)
     }
 
-    /// Synchronize and store the message skeletons from users.messages.list
+    /// Synchronize and store the message skeletons from users.messages.list,
+    /// returning the ids of every listed message
     async fn fetch_and_store_message_skeletons(
         &self,
         progress: Channel<Progress>,
-    ) -> Result<(), AppError> {
+    ) -> Result<HashSet<String>, AppError> {
         // https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/list
         // list the first 500 messages
         let (b, res) = self
@@ -79,6 +97,8 @@ impl GmailClient {
         };
 
         self.repo.insert_skeleton_messages(&messages).await?;
+        let mut listed_ids: HashSet<String> =
+            messages.iter().filter_map(|m| m.id.clone()).collect();
 
         let mut next_page_token = res.next_page_token;
         // until no new page token is returned,
@@ -118,6 +138,7 @@ impl GmailClient {
 
             // and insert them into the table to be stored later
             self.repo.insert_skeleton_messages(&messages).await?;
+            listed_ids.extend(messages.iter().filter_map(|m| m.id.clone()));
 
             next_page_token = res.next_page_token;
         }
@@ -127,7 +148,7 @@ impl GmailClient {
             self.account_id
         );
 
-        Ok(())
+        Ok(listed_ids)
     }
 
     /// fetch, parse and store a single message, backfilling a message skeleton

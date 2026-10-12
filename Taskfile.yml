@@ -143,12 +143,14 @@ tasks:
   demo:
     desc: "embed a few texts and rerank a query against the running api, prints similarities"
     dir: deployables/backend
-    cmds: [go run ./cmd/demo {{.CLI_ARGS}}]
+    cmds: 
+      - go run ./cmd/demo {{.CLI_ARGS}}
 
   smoke:
     desc: "end to end api check against the running api (needs BILLING_ENFORCE=false)"
     dir: deployables/backend
-    cmds: [go run ./cmd/smoke {{.CLI_ARGS}}]
+    cmds: 
+      - go run ./cmd/smoke {{.CLI_ARGS}}
 
   down:
     desc: "stop and remove stack"

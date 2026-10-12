@@ -5,7 +5,7 @@ use tauri::ipc::Channel;
 
 use crate::email::repo::HistoryID;
 use crate::email::repo::NeedsCacheInvalidate;
-use crate::{email, AppError, InvalidateEvent, Progress, ProgressReporter};
+use crate::{AppError, InvalidateEvent, Progress, ProgressReporter};
 
 use super::GmailClient;
 
@@ -39,7 +39,7 @@ impl GmailClient {
             out_of: Some(4),
         });
 
-        let mut events = match res {
+        let (mut events, history_id_new) = match res {
             Err(e) => match e {
                 // on 404, we need to perform a full_sync
                 google_gmail1::Error::Failure(res)
@@ -66,12 +66,7 @@ impl GmailClient {
                 });
 
                 info!("got empty history list, completing!");
-                self.repo
-                    .set_account_config_sync_cursor(HistoryID::LastSynced(
-                        history_id_new.to_string(),
-                    ))
-                    .await?;
-                return Ok(vec![]);
+                (vec![], history_id_new)
             }
 
             // got some history, apply it
@@ -84,14 +79,16 @@ impl GmailClient {
                     ..
                 },
             )) => {
-                self.apply_partial_sync_history(
-                    start_history_id,
-                    updates.clone(),
-                    history,
-                    history_id_new,
-                    next_page_token,
-                )
-                .await?
+                let events = self
+                    .apply_partial_sync_history(
+                        start_history_id,
+                        updates.clone(),
+                        history,
+                        history_id_new,
+                        next_page_token,
+                    )
+                    .await?;
+                (events, history_id_new)
             }
 
             Ok((d, r)) => {
@@ -100,12 +97,18 @@ impl GmailClient {
             }
         };
 
-        // the added messages need to be loaded
+        // the added messages need to be loaded; also retries skeletons left over from earlier failures
+        // ponytail: a permanently unparseable message retries on every sync; add a failure counter or backoff once that shows up in logs
         updates.report_message("Loading Emails".into());
         let status = self
             .backfill_messages(self.repo.stream_message_skeletons().await?, updates)
             .await?;
         self.add_message_events(status, &mut events);
+
+        // single cursor commit, only after everything above succeeded
+        self.repo
+            .set_account_config_sync_cursor(HistoryID::LastSynced(history_id_new.to_string()))
+            .await?;
 
         Ok(events)
     }
@@ -155,39 +158,13 @@ impl GmailClient {
                     running_page_token = next_page_token;
                 }
 
-                ListHistoryResponse {
-                    history: None,
-                    history_id: Some(history_id_finished),
-                    ..
-                } => {
-                    updates.report_message("Loading Emails".into());
-                    let status = self
-                        .backfill_messages(
-                            self.repo.stream_message_skeletons().await?,
-                            updates.clone(),
-                        )
-                        .await?;
-                    self.add_message_events(status, &mut events);
-
-                    self.repo
-                        .set_account_config_sync_cursor(email::repo::HistoryID::LastSynced(
-                            history_id_finished.to_string(),
-                        ))
-                        .await?;
-
-                    return Ok(events);
-                }
+                ListHistoryResponse { history: None, .. } => break,
 
                 _ => return Err(AppError::GmailResponseIncomplete),
             }
         }
 
-        info!("finished partial sync to {history_id_new}");
-        self.repo
-            .set_account_config_sync_cursor(email::repo::HistoryID::LastSynced(
-                history_id_new.to_string(),
-            ))
-            .await?;
+        info!("finished applying history to {history_id_new}");
 
         Ok(events)
     }

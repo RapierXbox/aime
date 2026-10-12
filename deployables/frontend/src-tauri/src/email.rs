@@ -195,8 +195,13 @@ pub async fn dev_email_full_sync(
         .await
         .ok_or(AppError::AccountNotFound)?;
 
-    let events = client.full_sync(update_channel).await?;
-    emit_invalidations(&app, events);
+    match client.full_sync(update_channel).await {
+        Ok(events) => emit_invalidations(&app, events),
+        Err(e) => {
+            emit_invalidations(&app, account_invalidations(account_id));
+            return Err(e);
+        }
+    }
     Ok(())
 }
 
@@ -227,8 +232,27 @@ pub async fn email_sync(
     let res = client.sync(update_channel).await;
     info!("email_sync res = {res:?}");
 
-    emit_invalidations(&app, res?);
+    match res {
+        Ok(events) => emit_invalidations(&app, events),
+        Err(e) => {
+            emit_invalidations(&app, account_invalidations(account_id));
+            return Err(e);
+        }
+    }
     Ok(())
+}
+
+/// every cache of an account; used when a sync failed, since it may still have
+/// committed history pages or backfilled messages before the error
+fn account_invalidations(account_id: i64) -> Vec<InvalidateEvent> {
+    let account_id = account_id.to_string();
+    vec![
+        InvalidateEvent::Accounts,
+        InvalidateEvent::ListMessages {
+            account_id: account_id.clone(),
+        },
+        InvalidateEvent::GetMessage { account_id },
+    ]
 }
 
 /// emit every collected invalidation, a failed emit only stales the frontend cache

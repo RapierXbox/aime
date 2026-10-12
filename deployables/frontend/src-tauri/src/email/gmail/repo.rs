@@ -1,4 +1,8 @@
-use std::{collections::HashMap, marker::PhantomData, process::Output};
+use std::{
+    collections::{HashMap, HashSet},
+    marker::PhantomData,
+    process::Output,
+};
 
 use futures::StreamExt;
 use google_gmail1::api::{
@@ -12,10 +16,9 @@ use tauri::{ipc::Channel, utils::mime_type::MimeType};
 
 use crate::{
     email::{
-        gmail::GmailError,
         repo::{
             AccountConfig, HistoryID, Label, Message, MessageContents, MessageSkeleton,
-            MissingField, NeedsCacheInvalidate,
+            NeedsCacheInvalidate,
         },
         MailBox,
     },
@@ -369,19 +372,40 @@ impl GmailRepo {
         Ok(())
     }
 
-    pub async fn get_latest_sync_cursor(&self) -> Result<String, AppError> {
-        sqlx::query!(
-            "SELECT sync_cursor FROM messages WHERE account_id = ? AND sync_cursor IS NOT NULL ORDER BY internal_date DESC LIMIT 1",
+    /// Delete this account's messages whose id is not in `keep` (i.e. deleted remotely).
+    /// `message_contents` and `message_has_label` rows follow via `ON DELETE CASCADE`.
+    // ponytail: in-memory id set, ~50 bytes x mailbox size. Use a TEMP table if mailboxes reach millions.
+    pub async fn delete_messages_not_in(
+        &self,
+        keep: &HashSet<String>,
+    ) -> Result<NeedsCacheInvalidate, AppError> {
+        let mut tx = self.db_pool.begin().await?;
+
+        let local = sqlx::query!(
+            "SELECT provider_msg_id FROM messages WHERE account_id = ?",
             self.account_id
         )
-        .fetch_one(&self.db_pool)
-        .await
-        .map_err(|e| {
-            error!("in get_latest_sync_cursor: db returned error {e:?}");
-            crate::AppError::Sqlx(e.into())
-        })
-        .and_then(|it| {
-            it.sync_cursor.ok_or(AppError::GmailErr(GmailError::MissingField(MissingField::SyncCursor)))
+        .fetch_all(&mut *tx)
+        .await?;
+
+        let mut deleted = false;
+        for row in local.iter().filter(|r| !keep.contains(&r.provider_msg_id)) {
+            sqlx::query!(
+                "DELETE FROM messages WHERE account_id = ? AND provider_msg_id = ?",
+                self.account_id,
+                row.provider_msg_id
+            )
+            .execute(&mut *tx)
+            .await?;
+            deleted = true;
+        }
+
+        tx.commit().await?;
+
+        Ok(if deleted {
+            NeedsCacheInvalidate::Yes
+        } else {
+            NeedsCacheInvalidate::No
         })
     }
 
@@ -849,6 +873,48 @@ mod tests {
         assert_eq!(msg.internal_date, Some(0));
         assert_eq!(msg.contents.len(), 1);
         assert_eq!(msg.contents[0].body, "mine");
+    }
+
+    #[tokio::test]
+    async fn delete_messages_not_in_removes_only_missing() {
+        let repo = repo_with_inbox_messages(3).await;
+        for id in ["msg-0000", "msg-0001", "msg-0002"] {
+            sqlx::query!(
+                "INSERT INTO message_contents (account_id, provider_msg_id, mime_type, body)
+                 VALUES (1, ?, 'text/plain', 'b')",
+                id
+            )
+            .execute(&repo.db_pool)
+            .await
+            .unwrap();
+        }
+
+        let keep: HashSet<String> = ["msg-0000", "msg-0002"].map(String::from).into();
+        let res = repo.delete_messages_not_in(&keep).await.unwrap();
+        assert!(matches!(res, NeedsCacheInvalidate::Yes));
+
+        // the deleted message's contents and label rows cascade away, the rest stay
+        for (table, expected) in [
+            ("messages", 2),
+            ("message_contents", 2),
+            ("message_has_label", 2),
+        ] {
+            let n: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}"))
+                .fetch_one(&repo.db_pool)
+                .await
+                .unwrap();
+            assert_eq!(n, expected, "{table}");
+        }
+        let gone: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE provider_msg_id = 'msg-0001'")
+                .fetch_one(&repo.db_pool)
+                .await
+                .unwrap();
+        assert_eq!(gone, 0);
+
+        // nothing left to delete
+        let res = repo.delete_messages_not_in(&keep).await.unwrap();
+        assert!(matches!(res, NeedsCacheInvalidate::No));
     }
 
     /// A skeleton row (listed, never hydrated) has no contents. The command must

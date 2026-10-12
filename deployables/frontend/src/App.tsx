@@ -45,7 +45,7 @@ function App() {
 
   // receive invalidate messages from the frontend
   useEffect(() => {
-    events.invalidateEvent.listen(ev => {
+    const unlisten = events.invalidateEvent.listen(ev => {
       if (ev.payload === "Accounts") {
         const getMsgQk = qk.accounts;
         queryClient.invalidateQueries({
@@ -69,8 +69,11 @@ function App() {
         const _exhaustiveCheck: never = ev.payload;
         throw new Error(`Unhandled invalidate event: ${_exhaustiveCheck}`);
       }
-    })
-  });
+    });
+    return () => {
+      unlisten.then(f => f());
+    };
+  }, [queryClient]);
 
   // für automatischen dark/light mode
   // TODO: change in settings

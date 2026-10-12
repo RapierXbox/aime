@@ -6,7 +6,10 @@ use email::gmail;
 use log::{debug, error, warn};
 use serde::Serialize;
 use specta::Type;
-use sqlx::{sqlite::SqliteConnectOptions, ConnectOptions};
+use sqlx::{
+    sqlite::{SqliteConnectOptions, SqliteJournalMode, SqliteSynchronous},
+    ConnectOptions,
+};
 use std::{fs, time::Duration};
 use tauri::{async_runtime, ipc::Channel, App, Manager};
 use tauri_specta::{collect_commands, collect_events, Builder};
@@ -133,6 +136,10 @@ fn setup(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
             .connect_lazy_with(
                 SqliteConnectOptions::new()
                     .filename(sqlx_dir)
+                    .create_if_missing(true)
+                    .foreign_keys(true)
+                    .journal_mode(SqliteJournalMode::Wal)
+                    .synchronous(SqliteSynchronous::Normal)
                     .optimize_on_close(true, None),
             );
 

@@ -21,3 +21,5 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+src-tauri/google_client_secret.json
+src-tauri/google_client_secret.json
