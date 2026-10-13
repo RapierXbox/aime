@@ -5,7 +5,6 @@ import {
   Send,
   Shredder,
   Star,
-  Trash,
   Trash2,
 } from "lucide-react";
 import { twMerge } from "tailwind-merge";

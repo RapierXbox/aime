@@ -33,7 +33,10 @@ use crate::{
     secret_store,
 };
 
+#[cfg(not(test))]
 static CLIENT_SECRET_STR: &str = include_str!("../../../google_client_secret.json");
+#[cfg(test)]
+static CLIENT_SECRET_STR: &str = include_str!("../../../fixtures/google_client_secret.json");
 #[derive(Deserialize, Debug, Clone)]
 struct ClientSecret {
     pub installed: OAuthConfig,
@@ -57,7 +60,7 @@ static CLIENT_SECRET: LazyLock<OAuthConfig> = LazyLock::new(|| {
         .installed
 });
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 struct TokenInfo {
     // TODO: replace with AccessToken type
     pub access_token: String,
@@ -67,6 +70,20 @@ struct TokenInfo {
     pub scopes: Vec<String>,
     // from yup_oauth2::TokenInfo, not needed?
     // pub id_token: Option<String>,
+}
+
+impl std::fmt::Debug for TokenInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TokenInfo")
+            .field("expires_on", &self.expires_on)
+            .field("scopes", &self.scopes)
+            .finish_non_exhaustive()
+    }
+}
+fn has_mail_scope(scopes: &[String]) -> bool {
+    scopes.iter().any(|s| {
+        s == "https://www.googleapis.com/auth/gmail.modify" || s == "https://mail.google.com/"
+    })
 }
 
 #[derive(Clone, Debug)]
@@ -87,7 +104,12 @@ type GetTokenOutput<'a> = Pin<
 
 impl google_gmail1::common::GetToken for TempAuth {
     fn get_token<'a>(&'a self, _scopes: &'a [&str]) -> GetTokenOutput<'a> {
-        Box::pin(async move { Ok(Some(self.token.access_token.clone())) })
+        Box::pin(async move {
+            if !has_mail_scope(&self.token.scopes) {
+                return Err(crate::AppError::EmailAuthorizationRequired.into());
+            }
+            Ok(Some(self.token.access_token.clone()))
+        })
     }
 }
 
@@ -137,9 +159,8 @@ pub struct Auth {
 impl std::fmt::Debug for Auth {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Auth")
-            .field("token", &self.inner.token)
+            .field("credentials", &"<redacted>")
             .field("profile", &self.inner.profile)
-            .field("oauth_client", &self.inner.oauth_client)
             .field("http_client", &"reqwest::Client")
             .finish()
     }
@@ -162,6 +183,9 @@ impl google_gmail1::common::GetToken for Auth {
         Box::pin(async move {
             self.ensure_refresh().await?;
             let token = self.inner.token.lock().await;
+            if !has_mail_scope(&token.scopes) {
+                return Err(crate::AppError::EmailAuthorizationRequired.into());
+            }
             Ok(Some(token.access_token.clone()))
         })
     }
@@ -247,17 +271,21 @@ impl Inner {
     }
 
     async fn refresh(&self, token: &mut TokenInfo) -> Result<(), crate::AppError> {
-        info!("Refreshing token for {:?}", token);
+        info!("Refreshing Gmail authorization");
 
         let res = self
             .oauth_client
             .exchange_refresh_token(&token.refresh_token)
             .request_async(&self.http_client)
             .await
-            .expect("TODO refresh token failed");
+            .map_err(|error| match error {
+                oauth2::RequestTokenError::Request(_) => crate::AppError::EmailNetworkError,
+                _ => crate::AppError::EmailAuthorizationRequired,
+            })?;
 
-        info!("received {res:?}");
-
+        if let Some(scopes) = res.scopes() {
+            token.scopes = scopes.iter().map(|scope| scope.to_string()).collect();
+        }
         let new_access_token = res.access_token().clone();
 
         token.access_token = new_access_token.into_secret();
@@ -361,7 +389,7 @@ async fn oauth2_flow(http_client: reqwest::Client) -> Result<TempAuth, crate::Ap
 
     // this uses feature `timing-resistant-secret-traits` to compare `state` with `csrf_token` in a timing-resistant way
     if state != csrf_token {
-        panic!("client csrf token mismatch");
+        return Err(crate::AppError::OAuth);
     }
 
     let c = client
@@ -369,26 +397,24 @@ async fn oauth2_flow(http_client: reqwest::Client) -> Result<TempAuth, crate::Ap
         .set_pkce_verifier(pkce_verifier)
         .request_async(&http_client)
         .await
-        .map_err(|e| {
-            error!("{e}");
-            crate::AppError::OAuth
-        })
-        .expect("token response should be ok");
+        .map_err(|_| crate::AppError::EmailAuthorizationRequired)?;
 
     let access_token = c.access_token().clone();
     let refresh_token = c
         .refresh_token()
-        .expect("refresh token should be present")
+        .ok_or(crate::AppError::EmailAuthorizationRequired)?
         .clone();
     let expires_on = SystemTime::now() + c.expires_in().unwrap_or(Duration::new(3600, 0));
 
-    // TODO: check that all scopes were granted
-    let scopes = c
+    let scopes: Vec<String> = c
         .scopes()
-        .unwrap()
+        .ok_or(crate::AppError::EmailAuthorizationRequired)?
         .iter()
         .map(|it| it.to_string())
         .collect();
+    if !has_mail_scope(&scopes) {
+        return Err(crate::AppError::EmailAuthorizationRequired);
+    }
 
     Ok(TempAuth {
         token: TokenInfo {
@@ -436,5 +462,29 @@ fn create_oauth2_client(
             Ok(client)
         }
         None => Ok(client),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn mail_scope_and_debug_do_not_expose_credentials() {
+        assert!(has_mail_scope(&[
+            "https://www.googleapis.com/auth/gmail.modify".into()
+        ]));
+        assert!(has_mail_scope(&["https://mail.google.com/".into()]));
+        assert!(!has_mail_scope(&[
+            "https://www.googleapis.com/auth/gmail.readonly".into()
+        ]));
+        let token = TokenInfo {
+            access_token: "private-access-value".into(),
+            refresh_token: RefreshToken::new("private-refresh-value".into()),
+            expires_on: SystemTime::UNIX_EPOCH,
+            scopes: vec![],
+        };
+        let debug = format!("{token:?}");
+        assert!(!debug.contains("private-access-value"));
+        assert!(!debug.contains("private-refresh-value"));
     }
 }

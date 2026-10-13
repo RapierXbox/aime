@@ -1,9 +1,8 @@
 /* eslint-disable @typescript-eslint/no-unused-vars */
-import { Activity, useEffect, useState } from "react";
+import { Activity, Suspense, lazy, useEffect, useState } from "react";
 import "./App.css";
 
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { listen } from "@tauri-apps/api/event";
 import {
   SidebarInset,
   SidebarProvider,
@@ -17,6 +16,10 @@ import {
   DialogContent,
   DialogTitle,
 } from "./components/ui/dialog";
+import DraftsPage from "./components/page/drafts/DraftsPage";
+import DraftSync from "./components/page/drafts/DraftSync";
+import { invalidationKeys } from "./lib/invalidation";
+import { flushAllDrafts } from "./lib/DraftStore";
 import InboxPage from "./components/page/InboxPage";
 import { Separator } from "./components/ui/separator";
 import { MessageView } from "./components/page/inbox/MessageView";
@@ -28,10 +31,11 @@ import { qk } from "@/lib/queryKeys";
 import { accountSyncState, useSyncStore } from "@/lib/SyncStore";
 import { cn } from "@/lib/utils";
 
+const DraftComposer = lazy(() => import("./components/page/drafts/DraftComposer"));
+
 function App() {
-  // der tanstack query client
-  // because the server actively invalidates the cache, we can set a longeer (theoretically infinite)
-  // stale time to avoid unnecessary refetches
+  // because the server actively invalidates the cache, we can set an infinite
+  // stale time to avoid unnecessary refetches, might lead to cache stale issues though
   const [queryClient, _] = useState(
     () =>
       new QueryClient({
@@ -43,37 +47,29 @@ function App() {
       }),
   );
 
-  // receive invalidate messages from the frontend
+  // tanstack query client invalidation is handled
+  // via events emitted from the rust backend in the repo layer
   useEffect(() => {
     const unlisten = events.invalidateEvent.listen(ev => {
-      if (ev.payload === "Accounts") {
-        const getMsgQk = qk.accounts;
-        queryClient.invalidateQueries({
-          queryKey: [getMsgQk],
-        });
-      } else if (ev.payload.GetMessage) {
-        const [qks, acc_id] = qk.message("", ev.payload.GetMessage.account_id);
-        const queryKey = [qks, acc_id];
-        queryClient.invalidateQueries({
-          queryKey,
-        });
-      } else if (ev.payload.ListMessages) {
-        const [qks, acc_id] = qk.inbox("", ev.payload.ListMessages.account_id);
-        const queryKey = [qks, acc_id];
-
-        queryClient.invalidateQueries({
-          queryKey,
-        });
-      } else {
-        // force a ts error when this block is non-exhaustive
-        const _exhaustiveCheck: never = ev.payload;
-        throw new Error(`Unhandled invalidate event: ${_exhaustiveCheck}`);
-      }
+      for (const queryKey of invalidationKeys(ev.payload)) void queryClient.invalidateQueries({ queryKey });
     });
+
     return () => {
       unlisten.then(f => f());
     };
   }, [queryClient]);
+
+  useEffect(() => {
+    const appWindow = getCurrentWindow();
+    let closing = false;
+    const listener = appWindow.onCloseRequested(async (event) => {
+      if (closing) return;
+      event.preventDefault();
+      try { await flushAllDrafts(); closing = true; await appWindow.close(); }
+      catch { closing = false; }
+    });
+    return () => { void listener.then((unlisten) => unlisten()); };
+  }, []);
 
   // für automatischen dark/light mode
   // TODO: change in settings
@@ -90,10 +86,6 @@ function App() {
 
     appWindow.theme().then(applyTheme);
     appWindow.onThemeChanged(({ payload }) => applyTheme(payload));
-
-    // die tanstack query client invalidierung
-    // wird im backend in der repo layer durch events ausgelöst
-    // listen("invalidate", (ev) => {})
   }, []);
 
   const inbox = useNavigationStore((it) => it.inbox);
@@ -103,6 +95,7 @@ function App() {
 
   return (
     <QueryClientProvider client={queryClient}>
+      <DraftSync />
       <SidebarProvider className="h-svh">
         <AppSidebar side="left" className="" />
         <SidebarInset className="min-h-0 overflow-hidden">
@@ -128,7 +121,7 @@ function App() {
             <Activity mode={settings ? "hidden" : "visible"}>
               {inbox && (
                 // key forces a remount when switching inbox, so no state leaks across them
-                <InboxPage
+                inbox.inboxId === "DRAFT" ? <DraftsPage key={inbox.accountId} accountId={inbox.accountId} /> : <InboxPage
                   key={`${inbox.accountId}:${inbox.inboxId}`}
                   accountId={inbox.accountId}
                   inboxId={inbox.inboxId}
@@ -137,7 +130,7 @@ function App() {
               <Separator orientation="vertical" />
               <div className="flex-1 min-w-0 overflow-y-auto">
                 {rightPanel ? (
-                  <MessageView
+                  rightPanel.view === "draft" ? <Suspense fallback={<p className="p-4 text-sm">Loading composer…</p>}><DraftComposer key={rightPanel.draftId} accountId={rightPanel.accountId} draftId={rightPanel.draftId} /></Suspense> : <MessageView
                     accountId={rightPanel.accountId}
                     message={rightPanel.message}
                   />

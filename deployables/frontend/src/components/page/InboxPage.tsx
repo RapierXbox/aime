@@ -1,6 +1,6 @@
 import { commands, type MailBox, type Message } from "@/bindings";
 import { qk } from "@/lib/queryKeys";
-import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery } from "@tanstack/react-query";
 import React from "react";
 import { cn } from "@/lib/utils";
 import { useNavigationStore } from "@/lib/NavigationStore";
@@ -14,7 +14,7 @@ const InboxPage: React.FC<{
 }> = ({ accountId, inboxId }) => {
   const selectEmail = useNavigationStore((state) => state.selectEmail);
   const selectedId = useNavigationStore((state) =>
-    state.rightPanel?.accountId === accountId
+    state.rightPanel?.view === "email" && state.rightPanel.accountId === accountId
       ? state.rightPanel.message.provider_msg_id
       : null,
   );
@@ -32,7 +32,7 @@ const InboxPage: React.FC<{
   const q = useInfiniteQuery({
     queryKey: qk.inbox(inboxId, accountId),
     queryFn: fetchMessages,
-    getNextPageParam: (lastPage, _) => {
+    getNextPageParam: (lastPage) => {
       return lastPage.next_page_param;
     },
 
@@ -65,7 +65,7 @@ const InboxPage: React.FC<{
                 key={msg.provider_msg_id}
                 message={msg}
                 active={msg.provider_msg_id === selectedId}
-                onSelect={() => selectEmail(accountId, msg)}
+                onSelect={() => void selectEmail(accountId, msg).catch(() => {})}
               />
             ))}
           </React.Fragment>
@@ -138,10 +138,10 @@ const EmailPreview: React.FC<{
           </span>
         )}
         <p className="min-w-0 font-semibold text-sm line-clamp-1 select-none">
-          {displayName(message.from_addr)}
+          {displayName(message.from_addr ?? "")}
         </p>
         <p className="shrink-0 text-xs ml-auto text-muted-foreground select-none">
-          {formatDateHeader(parsed)}
+          {parsed ? formatDateHeader(parsed) : ""}
         </p>
       </div>
 

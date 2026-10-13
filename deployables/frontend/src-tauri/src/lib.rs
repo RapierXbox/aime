@@ -53,6 +53,7 @@ pub enum InvalidateEvent {
     GetMessage { account_id: String },
     ListMessages { account_id: String },
     Accounts,
+    DraftsChanged { account_id: String },
 }
 
 impl InvalidateEvent {
@@ -65,9 +66,8 @@ impl InvalidateEvent {
     }
 }
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
-    let builder = Builder::<tauri::Wry>::new()
+fn command_builder() -> Builder<tauri::Wry> {
+    Builder::<tauri::Wry>::new()
         // Then register them (separated by a comma)
         .commands(collect_commands![
             gmail::register_gmail_account,
@@ -75,9 +75,24 @@ pub fn run() {
             email::dev_email_full_sync,
             email::email_sync,
             email::list_messages,
-            email::get_message
+            email::get_message,
+            email::drafts::create_draft,
+            email::drafts::list_drafts,
+            email::drafts::get_draft,
+            email::drafts::save_draft,
+            email::drafts::sync_drafts,
+            email::drafts::resolve_draft_conflict,
+            email::drafts::delete_draft,
+            email::drafts::send_draft,
+            email::drafts::resolve_send_attempt,
+            email::drafts::open_gmail
         ])
-        .events(collect_events![InvalidateEvent]);
+        .events(collect_events![InvalidateEvent])
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    let builder = command_builder();
 
     #[cfg(debug_assertions)] // <- Only export on non-release builds
     builder
@@ -151,6 +166,7 @@ fn setup(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let pool = pres?;
+    async_runtime::block_on(email::drafts::store::Store(pool.clone()).recover_pending())?;
 
     // setup the email handling
     email::setup(app, &pool)?;
@@ -188,6 +204,11 @@ impl Type for IpcEcoString {
 #[cfg(test)]
 mod tests {
     use super::InvalidateEvent;
+
+    #[test]
+    fn export_bindings() {
+        super::command_builder().export(specta_typescript::Typescript::default(), concat!(env!("CARGO_MANIFEST_DIR"), "/../src/bindings.ts")).unwrap();
+    }
 
     #[test]
     fn invalidate_event_add_to_dedups() {

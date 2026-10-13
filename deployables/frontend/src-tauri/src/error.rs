@@ -187,6 +187,24 @@ impl From<tauri::Error> for AppError {
 
 #[derive(Error, Debug, Serialize, Type)]
 pub enum AppError {
+    #[error("Draft not found")]
+    DraftNotFound,
+    #[error("Draft has changed; reload before editing or sending")]
+    DraftRevisionConflict,
+    #[error("Draft cannot be edited or sent in its current state")]
+    DraftLocked,
+    #[error("Invalid recipients or header characters")]
+    InvalidRecipients,
+    #[error("Source message has invalid or missing reply headers")]
+    InvalidReplyHeaders,
+    #[error("Reconnect the Gmail account to authorize email operations")]
+    EmailAuthorizationRequired,
+    #[error("Gmail rejected the operation; the draft is retained")]
+    EmailProviderRejected,
+    #[error("Cannot connect to Gmail; sending has not been queued")]
+    EmailNetworkError,
+    #[error("Gmail operation outcome is unknown; check Gmail before retrying")]
+    EmailOutcomeUnknown,
     #[error("Missing database File")]
     MissingDbPath,
 

@@ -21,6 +21,7 @@ ansible/inventory/group_vars/all/vault.yml
 *.retry
 CLAUDE.md
 frontend/src-tauri/google_client_secret.json
+deployables/frontend/src-tauri/google_client_secret.json
 
 id_ed25519
 

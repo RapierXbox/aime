@@ -45,6 +45,9 @@ futures = "0.3.32"
 base64 = "0.22.1"
 ecow = { version = "0.3.0", features = ["serde"] }
 chrono = "0.4"
+mail-builder = "1.0.0"
+mailparse = "0.18.0"
+email_address = "0.2.9"
 
 [dev-dependencies]
 # for #[tokio::test] on the async repo queries

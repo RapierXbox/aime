@@ -191,4 +191,18 @@ pub struct Message {
     pub cc_addrs: Option<String>,
     pub subject: Option<String>,
     pub snippet: Option<String>,
+    #[serde(default)]
+    pub reply_to: Option<String>,
+    #[serde(default)]
+    pub message_id: Option<String>,
+    #[serde(default)]
+    pub in_reply_to: Option<String>,
+    #[serde(default)]
+    pub references: Option<String>,
+    #[serde(default)]
+    pub bcc_addrs: Option<String>,
+    #[serde(default)]
+    pub mime_issues: Vec<String>,
+    #[serde(default)]
+    pub metadata_loaded: bool,
 }

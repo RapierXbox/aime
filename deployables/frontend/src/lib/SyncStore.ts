@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { Channel } from "@tauri-apps/api/core";
+import { syncDraftAccount } from "./DraftStore";
 import { commands, type Progress } from "@/bindings";
 
 // TODO: rename to TaskStore for all asynchronous global tasks
@@ -51,10 +52,10 @@ export const useSyncStore = create<SyncStore>()((set, get) => ({
       ? commands.devEmailFullSync(accountId, chan)
       : commands.emailSync(accountId, chan);
 
-    req.then((res) => {
-      set_({
-        status: res.status === "ok" ? "ok" : "error",
-      });
+    void Promise.allSettled([req, syncDraftAccount(accountId)]).then(([mail, drafts]) => {
+      const mailOk = mail.status === "fulfilled" && mail.value.status === "ok";
+      const draftsOk = drafts.status === "fulfilled";
+      set_({ status: mailOk && draftsOk ? "ok" : "error", statusMessage: `Mailbox: ${mailOk ? "synced" : "failed"} · Drafts: ${draftsOk ? "synced" : "failed"}`, progress: 1 });
       setTimeout(() => set_({ status: "idle", progress: null }), 5000);
     });
   },

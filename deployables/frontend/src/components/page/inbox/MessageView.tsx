@@ -1,7 +1,10 @@
 import { commands, type Message } from "@/bindings";
 import { qk } from "@/lib/queryKeys";
 import { useQuery } from "@tanstack/react-query";
-import React from "react";
+import React, { useState } from "react";
+import { useNavigationStore } from "@/lib/NavigationStore";
+import { emailError } from "@/lib/drafts";
+import { Button } from "@/components/ui/button";
 import DOMPurify from "dompurify";
 import { DevOnly } from "@/components/dev/DevOnly";
 
@@ -15,7 +18,7 @@ DOMPurify.addHook("afterSanitizeAttributes", (node) => {
 });
 
 export const MessageViewHeader: React.FC<{ message: Message, accountId: string }> =
-  ({ message, accountId }) => {
+  ({ message }) => {
     return (
       <div className="p-4 space-y-1 border-b border-border">
         <p className="text-sm font-semibold">{message.subject}</p>
@@ -37,7 +40,7 @@ export const MessageViewHeader: React.FC<{ message: Message, accountId: string }
             {new Date(message.date_header).toLocaleString("de-DE")}
           </p>
         )}
-        <DevOnly><DevEmailHeader accountId={accountId} message={message} /></DevOnly>
+        <DevOnly><DevEmailHeader message={message} /></DevOnly>
       </div>
     );
   }
@@ -57,7 +60,7 @@ const DEFAULT_BODY_STYLE =
 // isolates email HTML in its own document so <style>/font-family rules can't
 // leak into the app chrome; sandboxed with no scripts, no same-origin access.
 // fills the available space and scrolls internally instead of resizing to content
-const EmailBodyFrame: React.FC<{ html: string }> = React.memo(({ html }) => (
+export const EmailBodyFrame: React.FC<{ html: string }> = React.memo(({ html }) => (
   <iframe
     sandbox="allow-same-origin"
     className="w-full h-full border-0"
@@ -69,7 +72,7 @@ const EmailBodyFrame: React.FC<{ html: string }> = React.memo(({ html }) => (
 // only the bodies are fetched here
 export const MessageView: React.FC<{ accountId: string; message: Message }> =
   React.memo(({ accountId, message }) => {
-    const msgId = message.provider_msg_id;
+    const msgId = message.provider_msg_id ?? null;
 
     const q = useQuery({
       queryKey: qk.message(accountId, msgId ?? ""),
@@ -85,7 +88,8 @@ export const MessageView: React.FC<{ accountId: string; message: Message }> =
 
     return (
       <div className="min-w-0 h-full flex flex-col">
-        <MessageViewHeader message={message} accountId={accountId} />
+        <MessageViewHeader message={q.data ?? message} accountId={accountId} />
+        <ReplyActions accountId={accountId} messageId={msgId} />
 
         {/* wide email HTML scrolls here, so the header stays put */}
         <div className="p-4 flex-1 min-h-0 overflow-auto">
@@ -111,9 +115,16 @@ export const MessageView: React.FC<{ accountId: string; message: Message }> =
 
 
 
-const DevEmailHeader: React.FC<{ accountId: string, message: Message }> = ({ accountId, message }) => {
+const DevEmailHeader: React.FC<{ message: Message }> = ({ message }) => {
   return (<div className="text-xs text-muted-foreground font-mono">
-    {Object.keys(message).map(it => (<>{it}: {message[it] as string}<br></br></>))
-    }
+    {Object.entries(message).map(([key, value]) => <div key={key}>{key}: {JSON.stringify(value)}</div>)}
   </div >);
 };
+function ReplyActions({ accountId, messageId }: { accountId: string; messageId: string | null }) {
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  return <div className="px-4 py-2 border-b border-border flex gap-2 flex-wrap">
+    {(["Reply", "ReplyAll", "Forward"] as const).map((mode) => <Button key={mode} className="rounded-none" variant="outline" disabled={busy || !messageId} onClick={() => { setBusy(true); setError(null); void useNavigationStore.getState().compose(accountId, mode, messageId).catch((e) => setError(emailError(e))).finally(() => setBusy(false)); }}>{mode === "ReplyAll" ? "Reply all" : mode}</Button>)}
+    {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+  </div>;
+}

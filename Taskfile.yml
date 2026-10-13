@@ -177,6 +177,13 @@ tasks:
     dir: deployables/backend
     cmds: [go test ./...]
 
+  test:frontend:
+    desc: run frontend tests (vitest + Rust unit tests)
+    dir: deployables/frontend
+    cmds:
+      - pnpm test
+      - pnpm test:rust
+
   lint:
     desc: lint backend and frontend
     deps: [lint:backend, lint:frontend]

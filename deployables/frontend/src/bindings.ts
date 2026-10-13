@@ -28,6 +28,26 @@ export const commands = {
 	/**  return a list of message stubs */
 	listMessages: (accountId: string, mailbox: MailBox, pageIndex: number) => typedError<ListMessages, AppError>(__TAURI_INVOKE("list_messages", { accountId, mailbox, pageIndex })),
 	getMessage: (accountId: string, providerMsgId: string) => typedError<Message, AppError>(__TAURI_INVOKE("get_message", { accountId, providerMsgId })),
+	createDraft: (accountId: string, mode: ComposeMode, sourceMessageId: string | null) => typedError<Draft, AppError>(__TAURI_INVOKE("create_draft", { accountId, mode, sourceMessageId })),
+	listDrafts: (accountId: string) => typedError<Draft[], AppError>(__TAURI_INVOKE("list_drafts", { accountId })),
+	getDraft: (draftId: string) => typedError<Draft, AppError>(__TAURI_INVOKE("get_draft", { draftId })),
+	saveDraft: (draftId: string, expectedRevision: number, fields: DraftFields) => typedError<Draft, AppError>(__TAURI_INVOKE("save_draft", { draftId, expectedRevision, fields })),
+	syncDrafts: (accountId: string) => typedError<null, AppError>(__TAURI_INVOKE("sync_drafts", { accountId })),
+	resolveDraftConflict: (draftId: string, expectedRevision: number, choice: ConflictChoice, localFields: {
+	to: string,
+	cc: string,
+	bcc: string,
+	subject: string,
+	body_text: string,
+	/**  The user's own text as HTML; always set, even for plain-text drafts. */
+	body_html: string,
+	/**  The quoted original (reply/forward), kept verbatim and never edited. */
+	quote_html: string,
+} | null) => typedError<Draft, AppError>(__TAURI_INVOKE("resolve_draft_conflict", { draftId, expectedRevision, choice, localFields })),
+	deleteDraft: (draftId: string, expectedRevision: number) => typedError<null, AppError>(__TAURI_INVOKE("delete_draft", { draftId, expectedRevision })),
+	sendDraft: (draftId: string, expectedRevision: number) => typedError<Draft, AppError>(__TAURI_INVOKE("send_draft", { draftId, expectedRevision })),
+	resolveSendAttempt: (attemptId: string, resolution: SendResolution) => typedError<Draft, AppError>(__TAURI_INVOKE("resolve_send_attempt", { attemptId, resolution })),
+	openGmail: (accountId: string, sent: boolean) => typedError<null, AppError>(__TAURI_INVOKE("open_gmail", { accountId, sent })),
 };
 
 /** Events */
@@ -36,7 +56,43 @@ export const events = {
 };
 
 /* Types */
-export type AppError = "MissingDbPath" | "GmailResponseIncomplete" | "OAuth" | ({ HttpErr: number }) & { GmailApiErr?: never; GmailErr?: never; Io?: never; Serde?: never; Sqlx?: never; Tauri?: never } | ({ Sqlx: SqlxError }) & { GmailApiErr?: never; GmailErr?: never; HttpErr?: never; Io?: never; Serde?: never; Tauri?: never } | ({ Io: IoError }) & { GmailApiErr?: never; GmailErr?: never; HttpErr?: never; Serde?: never; Sqlx?: never; Tauri?: never } | "UrlParseError" | "KeyringSaveError" | "KeyringLoadError" | "AccountTypeMismatch" | "GmailMissingLabels" | ({ Serde: SerdeError }) & { GmailApiErr?: never; GmailErr?: never; HttpErr?: never; Io?: never; Sqlx?: never; Tauri?: never } | ({ Tauri: TauriError }) & { GmailApiErr?: never; GmailErr?: never; HttpErr?: never; Io?: never; Serde?: never; Sqlx?: never } | "AccountNotFound" | ({ GmailErr: GmailError }) & { GmailApiErr?: never; HttpErr?: never; Io?: never; Serde?: never; Sqlx?: never; Tauri?: never } | ({ GmailApiErr: GmailApiError }) & { GmailErr?: never; HttpErr?: never; Io?: never; Serde?: never; Sqlx?: never; Tauri?: never } | "ParseAccountID" | "ParseSyncCursor" | "InvalidEmailBody";
+export type AppError = "DraftNotFound" | "DraftRevisionConflict" | "DraftLocked" | "InvalidRecipients" | "InvalidReplyHeaders" | "EmailAuthorizationRequired" | "EmailProviderRejected" | "EmailNetworkError" | "EmailOutcomeUnknown" | "MissingDbPath" | "GmailResponseIncomplete" | "OAuth" | ({ HttpErr: number }) & { GmailApiErr?: never; GmailErr?: never; Io?: never; Serde?: never; Sqlx?: never; Tauri?: never } | ({ Sqlx: SqlxError }) & { GmailApiErr?: never; GmailErr?: never; HttpErr?: never; Io?: never; Serde?: never; Tauri?: never } | ({ Io: IoError }) & { GmailApiErr?: never; GmailErr?: never; HttpErr?: never; Serde?: never; Sqlx?: never; Tauri?: never } | "UrlParseError" | "KeyringSaveError" | "KeyringLoadError" | "AccountTypeMismatch" | "GmailMissingLabels" | ({ Serde: SerdeError }) & { GmailApiErr?: never; GmailErr?: never; HttpErr?: never; Io?: never; Sqlx?: never; Tauri?: never } | ({ Tauri: TauriError }) & { GmailApiErr?: never; GmailErr?: never; HttpErr?: never; Io?: never; Serde?: never; Sqlx?: never } | "AccountNotFound" | ({ GmailErr: GmailError }) & { GmailApiErr?: never; HttpErr?: never; Io?: never; Serde?: never; Sqlx?: never; Tauri?: never } | ({ GmailApiErr: GmailApiError }) & { GmailErr?: never; HttpErr?: never; Io?: never; Serde?: never; Sqlx?: never; Tauri?: never } | "ParseAccountID" | "ParseSyncCursor" | "InvalidEmailBody";
+
+export type ComposeMode = "New" | "Reply" | "ReplyAll" | "Forward";
+
+export type ConflictChoice = "UseGmail" | "KeepLocalAsCopy";
+
+export type Draft = {
+	id: string,
+	account_id: string,
+	fields: DraftFields,
+	revision: number,
+	acknowledged_revision: number,
+	status: DraftStatus,
+	remote: RemoteDraft | null,
+	conflict: RemoteDraft | null,
+	issues: string[],
+	thread_id: string | null,
+	in_reply_to: string | null,
+	references: string | null,
+	attempt_id: string | null,
+	attempt_kind: string | null,
+	sent_message_id: string | null,
+};
+
+export type DraftFields = {
+	to: string,
+	cc: string,
+	bcc: string,
+	subject: string,
+	body_text: string,
+	/**  The user's own text as HTML; always set, even for plain-text drafts. */
+	body_html: string,
+	/**  The quoted original (reply/forward), kept verbatim and never edited. */
+	quote_html: string,
+};
+
+export type DraftStatus = "Local" | "Synced" | "Conflict" | "Missing" | "Unsupported" | "Sending" | "Unknown" | "Sent" | "Deleted";
 
 export type GmailApiError = "HttpError" | ({ UploadSizeLimitExceeded: {
 	resource_size: number | null,
@@ -51,9 +107,11 @@ export type GmailError = "AuthUrlParse" | "TokenUrlParse" | "RedirectUrlParse" |
  */
 export type InvalidateEvent = ({ GetMessage: {
 	account_id: string,
-} }) & { ListMessages?: never } | ({ ListMessages: {
+} }) & { DraftsChanged?: never; ListMessages?: never } | ({ ListMessages: {
 	account_id: string,
-} }) & { GetMessage?: never } | "Accounts";
+} }) & { DraftsChanged?: never; GetMessage?: never } | "Accounts" | ({ DraftsChanged: {
+	account_id: string,
+} }) & { GetMessage?: never; ListMessages?: never };
 
 /**  Machine-readable subset of `std::io::ErrorKind`; rest collapse to `Other`. */
 export type IoError = "NotFound" | "PermissionDenied" | "AlreadyExists" | "Connection" | "TimedOut" | "UnexpectedEof" | "Other";
@@ -84,6 +142,13 @@ export type Message = {
 	cc_addrs: string | null,
 	subject: string | null,
 	snippet: string | null,
+	reply_to?: string | null,
+	message_id?: string | null,
+	in_reply_to?: string | null,
+	references?: string | null,
+	bcc_addrs?: string | null,
+	mime_issues?: string[],
+	metadata_loaded?: boolean,
 };
 
 export type MessageContents = {
@@ -98,6 +163,20 @@ export type Progress = ({ Update: {
 	completed: number,
 	out_of: number,
 } }) & { Message?: never } | ({ Message: string }) & { Update?: never };
+
+export type RemoteDraft = {
+	id: string,
+	message_id: string,
+	fields: DraftFields,
+	issues: string[],
+	thread_id: string | null,
+	in_reply_to: string | null,
+	references: string | null,
+	operation_id: string | null,
+	from: string,
+};
+
+export type SendResolution = "ConfirmSent" | "AllowManualRetry";
 
 /**  Mirrors `serde_json::error::Category` — the meaningful failure kinds. */
 export type SerdeError = "Io" | "Syntax" | "Data" | "Eof";

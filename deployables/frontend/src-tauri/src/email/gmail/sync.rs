@@ -105,7 +105,7 @@ impl GmailClient {
 
     /// labels are used for sorting messages into inboxes as well as user defined labels
     /// this function refetches the user's available labels and reports whether the frontend labels query must be invalidated
-    async fn sync_labels(&self) -> Result<NeedsCacheInvalidate, AppError> {
+    pub(super) async fn sync_labels(&self) -> Result<NeedsCacheInvalidate, AppError> {
         // list the labels from the gmail api
         let (_, res) = self
             .client

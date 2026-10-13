@@ -236,6 +236,18 @@ impl GmailRepo {
             AppError::Sqlx(e.into())
         })?;
 
+        if msg.metadata_loaded {
+            let metadata = serde_json::json!({
+                "reply_to": msg.reply_to, "message_id": msg.message_id,
+                "in_reply_to": msg.in_reply_to, "references": msg.references,
+                "bcc_addrs": msg.bcc_addrs, "mime_issues": msg.mime_issues,
+                "metadata_loaded": true
+            }).to_string();
+            sqlx::query("UPDATE messages SET compose_metadata = ?, in_reply_to = ?, msg_references = ? WHERE account_id = ? AND provider_msg_id = ?")
+                .bind(metadata).bind(&msg.in_reply_to).bind(&msg.references)
+                .bind(self.account_id).bind(&msg.provider_msg_id).execute(&mut *tx).await?;
+        }
+
         // delete, then readd all labels
         sqlx::query!(
             "DELETE FROM message_has_label WHERE provider_msg_id = ? AND account_id = ?",
@@ -501,6 +513,7 @@ impl GmailRepo {
                         cc_addrs: re.cc_addrs,
                         subject: re.subject,
                         snippet: re.snippet,
+                        ..Default::default()
                     }
                 })
                 .collect(),
@@ -553,6 +566,13 @@ impl GmailRepo {
 
         tx.commit().await?;
 
+        let metadata: Option<String> = sqlx::query_scalar("SELECT compose_metadata FROM messages WHERE account_id = ? AND provider_msg_id = ?")
+            .bind(self.account_id).bind(msg_id).fetch_one(&self.db_pool).await?;
+        let mut extra = serde_json::to_value(Message::default())?;
+        if let Some(metadata) = metadata {
+            if let (Some(target), Some(source)) = (extra.as_object_mut(), serde_json::from_str::<serde_json::Value>(&metadata)?.as_object()) { target.extend(source.clone()); }
+        }
+        let extra: Message = serde_json::from_value(extra)?;
         Ok(Message {
             provider_msg_id: Some(row.provider_msg_id),
             contents,
@@ -567,6 +587,7 @@ impl GmailRepo {
             cc_addrs: row.cc_addrs,
             subject: row.subject,
             snippet: row.snippet,
+            ..extra
         })
     }
 }

@@ -6,7 +6,7 @@ use std::{
 
 use base64::prelude::*;
 use base64::Engine;
-use google_gmail1::api::MessagePartBody;
+use google_gmail1::api::{MessagePartBody, MessagePartHeader};
 use google_gmail1::{
     api::MessagePart,
     hyper_rustls::HttpsConnector,
@@ -32,6 +32,7 @@ use crate::{
 pub type GmailApiClient = google_gmail1::Gmail<HttpsConnector<HttpConnector>>;
 
 pub mod auth;
+mod drafts;
 pub mod repo;
 mod sync;
 
@@ -40,6 +41,8 @@ pub struct GmailClient {
     account_id: i64,
     email_addr: String,
     repo: GmailRepo,
+    pub(super) draft_store: crate::email::drafts::store::Store,
+    pub(super) draft_lock: tokio::sync::Mutex<()>,
 }
 
 impl std::fmt::Debug for GmailClient {
@@ -66,8 +69,14 @@ impl GmailClient {
             client,
             account_id,
             email_addr,
-            repo: GmailRepo::new(db_pool, account_id),
+            repo: GmailRepo::new(db_pool.clone(), account_id),
+            draft_store: crate::email::drafts::store::Store(db_pool),
+            draft_lock: tokio::sync::Mutex::new(()),
         }
+    }
+
+    pub(crate) fn account_id(&self) -> i64 {
+        self.account_id
     }
 
     pub fn email_addr(&self) -> &str {
@@ -79,7 +88,7 @@ impl GmailClient {
 
     // parses a single message from the Gmail API into a [`Message`] struct
     // also works on format=minimal
-    fn parse_message(
+    pub(crate) fn parse_message(
         msg: google_gmail1::api::Message,
     ) -> Result<crate::email::repo::Message, AppError> {
         let Some(payload) = msg.payload.clone() else {
@@ -107,23 +116,61 @@ impl GmailClient {
             return Err(GmailError::MissingField(MissingField::Headers).into());
         };
 
-        let mut header_map: HashMap<String, String> =
-            HashMap::from_iter(headers.into_iter().filter_map(|it| it.name.zip(it.value)));
+        let mut header_issues = Vec::new();
+        let mut header_map: HashMap<String, String> = HashMap::new();
+        for (name, value) in headers.into_iter().filter_map(|h| h.name.zip(h.value)) {
+            let key = name.to_ascii_lowercase();
+            if header_map.contains_key(&key)
+                && matches!(key.as_str(), "subject" | "from" | "message-id")
+            {
+                header_issues.push("Ambiguous message headers".into());
+            }
+            let separator = if matches!(key.as_str(), "to" | "cc" | "bcc" | "reply-to") {
+                ", "
+            } else {
+                " "
+            };
+            header_map
+                .entry(key)
+                .and_modify(|v| {
+                    v.push_str(separator);
+                    v.push_str(&value);
+                })
+                .or_insert(value);
+        }
 
         let Some(msg_id) = msg.id.clone() else {
             return Err(GmailError::MissingField(MissingField::MsgId).into());
         };
 
-        let contents = Self::collect_mime_leaves(payload, &msg_id);
+        let mut mime_issues = header_issues;
+        if header_map
+            .get("mime-version")
+            .is_some_and(|v| v.trim() != "1.0")
+        {
+            mime_issues.push("Unsupported MIME version".into());
+        }
+        let contents = Self::collect_mime_leaves(payload, &msg_id, &mut mime_issues);
+        let count = |mime: &str| contents.iter().filter(|c| c.mime_type == mime).count();
+        if count("text/html") > 1 || count("text/plain") > 1 {
+            // Re-uploading would keep only the first part of each type and drop the rest.
+            mime_issues.push("Ambiguous message body".into());
+        }
 
         let sync_cursor = msg.history_id.map(|id| id.to_string());
         let thread_id = msg.thread_id;
 
-        let date_header = header_map.remove("Date");
-        let from_addr = header_map.remove("From");
-        let to_addrs = header_map.remove("To");
-        let cc_addrs = header_map.remove("Cc");
-        let subject = header_map.remove("Subject");
+        let date_header = header_map.remove("date");
+        let from_addr = header_map.remove("from");
+        let to_addrs = header_map.remove("to");
+        let cc_addrs = header_map.remove("cc");
+        let subject = header_map.remove("subject").map(|value| {
+            let raw = format!("Subject: {value}\r\n\r\n");
+            mailparse::parse_headers(raw.as_bytes())
+                .ok()
+                .and_then(|(h, _)| h.first().map(|h| h.get_value()))
+                .unwrap_or(value)
+        });
 
         let snippet = msg.snippet;
 
@@ -141,22 +188,88 @@ impl GmailClient {
             internal_date: msg.internal_date,
             provider_msg_id: msg.id,
             size_estimate: msg.size_estimate,
+            reply_to: header_map.remove("reply-to"),
+            message_id: header_map.remove("message-id"),
+            in_reply_to: header_map.remove("in-reply-to"),
+            references: header_map.remove("references"),
+            bcc_addrs: header_map.remove("bcc"),
+            mime_issues,
+            metadata_loaded: true,
         })
     }
 
-    /// Recursively walks a MIME part tree, collecting every leaf that parses.
-    /// Container parts (`parts: Some(_)`) recurse; anything else is tried as a leaf.
-    fn collect_mime_leaves(part: MessagePart, msg_id: &str) -> Vec<MessageContents> {
-        match part.parts {
-            Some(children) => children
-                .into_iter()
-                .flat_map(|child| Self::collect_mime_leaves(child, msg_id))
-                .collect(),
+    /// True for parts that are not body text: downloadable files and inline
+    /// resources. These are fetched lazily by `attachmentId`, never stored as contents.
+    fn is_attachment(part: &MessagePart) -> bool {
+        match part {
+            // Named file, e.g. `report.pdf`. Gmail sends `filename: ""` on body parts.
+            MessagePart {
+                filename: Some(f), ..
+            } if !f.is_empty() => true,
+            // Gmail moved the bytes out of the message; only fetchable separately.
+            MessagePart {
+                body:
+                    Some(MessagePartBody {
+                        attachment_id: Some(_),
+                        ..
+                    }),
+                ..
+            } => true,
+            MessagePart {
+                headers: Some(hs), ..
+            } => hs.iter().any(Self::header_marks_attachment),
+            _ => false,
+        }
+    }
 
-            None => Self::parse_mime_leaf(part, msg_id.to_string())
-                .inspect_err(|e| error!("skipping message part inside msg_id={msg_id} err={e:?}"))
-                .into_iter()
-                .collect(),
+    /// `Content-Disposition: attachment` (even without a filename), or any
+    /// `Content-ID`, which marks an inline resource referenced from HTML as `cid:<id>`.
+    fn header_marks_attachment(h: &MessagePartHeader) -> bool {
+        let name = h.name.as_deref().unwrap_or_default().to_ascii_lowercase();
+        match (name.as_str(), h.value.as_deref()) {
+            ("content-disposition", Some(v)) => v.to_ascii_lowercase().contains("attachment"),
+            ("content-id", _) => true,
+            _ => false,
+        }
+    }
+
+    /// Recursively walks a MIME part tree, collecting every leaf that parses.
+    /// Attachments are skipped; container parts (`parts: Some(_)`) recurse;
+    /// anything else is tried as a leaf. Problems are reported via `issues`.
+    fn collect_mime_leaves(
+        part: MessagePart,
+        msg_id: &str,
+        issues: &mut Vec<String>,
+    ) -> Vec<MessageContents> {
+        if Self::is_attachment(&part) {
+            issues.push("Attachment or inline image".into());
+            return vec![];
+        }
+        match (part.parts.is_some(), part.mime_type.as_deref()) {
+            (true, Some(mime)) if !mime.starts_with("multipart/") => {
+                issues.push("Ambiguous MIME container".into())
+            }
+            _ => {
+                // do nothing
+            }
+        }
+        match part.parts {
+            Some(children) => {
+                if children.is_empty() {
+                    issues.push("Empty MIME container".into());
+                }
+                children
+                    .into_iter()
+                    .flat_map(|child| Self::collect_mime_leaves(child, msg_id, issues))
+                    .collect()
+            }
+            None => match Self::parse_mime_leaf(part, msg_id.to_string()) {
+                Ok(content) => vec![content],
+                Err(_) => {
+                    issues.push("Unsupported or incomplete message part".into());
+                    vec![]
+                }
+            },
         }
     }
 
@@ -166,6 +279,14 @@ impl GmailClient {
         part: MessagePart,
         provider_msg_id: String,
     ) -> Result<email::repo::MessageContents, AppError> {
+        let mut part = part;
+        if part.mime_type.as_deref() == Some("text/plain") {
+            if let Some(body) = &mut part.body {
+                if body.data.is_none() && body.size == Some(0) && body.attachment_id.is_none() {
+                    body.data = Some(vec![]);
+                }
+            }
+        }
         let MessagePart {
             body:
                 Some(MessagePartBody {
@@ -185,8 +306,8 @@ impl GmailClient {
         }
 
         // TODO: remove this copy, add lifetime to MessageContents
-        let body = String::from_utf8(body_data).map_err(|e| {
-            error!("decode error while inserting message part for msg_id={provider_msg_id}: {e:?}");
+        let body = String::from_utf8(body_data).map_err(|_| {
+            error!("invalid UTF-8 message part for msg_id={provider_msg_id}");
             AppError::InvalidEmailBody
         })?;
 
@@ -572,5 +693,136 @@ mod tests {
             "expected both nested leaf parts to survive tree-walking, got {:?}",
             parsed.contents
         );
+    }
+}
+
+#[cfg(test)]
+mod compose_parser_tests {
+    use super::*;
+    use google_gmail1::api::{Message as GMessage, MessagePartHeader};
+    fn text(data: &[u8]) -> MessagePart {
+        MessagePart {
+            mime_type: Some("text/plain".into()),
+            body: Some(MessagePartBody {
+                data: Some(data.to_vec()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+    fn html(data: &[u8]) -> MessagePart {
+        MessagePart {
+            mime_type: Some("text/html".into()),
+            ..text(data)
+        }
+    }
+    fn parse(mut part: MessagePart) -> Message {
+        part.headers.get_or_insert_default();
+        GmailClient::parse_message(GMessage {
+            id: Some("m".into()),
+            payload: Some(part),
+            ..Default::default()
+        })
+        .unwrap()
+    }
+    #[test]
+    fn draft_classification_preserves_the_original_structure() {
+        assert!(parse(text(b"already decoded")).mime_issues.is_empty());
+        let mut empty = text(b"");
+        empty.body.as_mut().unwrap().data = None;
+        empty.body.as_mut().unwrap().size = Some(0);
+        assert!(parse(empty).mime_issues.is_empty());
+        let mut attachment = text(b"not compose text");
+        attachment.filename = Some("notes.txt".into());
+        assert!(parse(attachment.clone()).contents.is_empty());
+        for part in [
+            MessagePart {
+                mime_type: Some("multipart/mixed".into()),
+                parts: Some(vec![text(b"body"), attachment]),
+                ..Default::default()
+            },
+            MessagePart {
+                mime_type: Some("multipart/alternative".into()),
+                parts: Some(vec![html(b"<p>one</p>"), html(b"<p>two</p>")]),
+                ..Default::default()
+            },
+            MessagePart {
+                mime_type: Some("multipart/mixed".into()),
+                parts: Some(vec![text(b"one"), text(b"two")]),
+                ..Default::default()
+            },
+            text(&[255]),
+            MessagePart {
+                mime_type: Some("text/plain".into()),
+                body: Some(MessagePartBody {
+                    attachment_id: Some("attachment".into()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        ] {
+            assert!(!parse(part).mime_issues.is_empty());
+        }
+    }
+    #[test]
+    fn plain_plus_html_alternative_has_no_issues() {
+        let part = MessagePart {
+            mime_type: Some("multipart/alternative".into()),
+            parts: Some(vec![text(b"body"), html(b"<p>body</p>")]),
+            ..Default::default()
+        };
+        assert!(parse(part).mime_issues.is_empty());
+    }
+    #[test]
+    fn attachment_detected_by_headers() {
+        let with_header = |name: &str, value: &str| MessagePart {
+            headers: Some(vec![MessagePartHeader {
+                name: Some(name.into()),
+                value: Some(value.into()),
+            }]),
+            ..text(b"x")
+        };
+        assert!(GmailClient::is_attachment(&with_header(
+            "Content-Disposition",
+            "ATTACHMENT"
+        )));
+        assert!(GmailClient::is_attachment(&with_header(
+            "content-id",
+            "<img1>"
+        )));
+        assert!(!GmailClient::is_attachment(&with_header(
+            "Content-Disposition",
+            "inline"
+        )));
+        assert!(!GmailClient::is_attachment(&text(b"x")));
+    }
+    #[test]
+    fn headers_are_case_insensitive_and_reply_ids_are_not_provider_ids() {
+        let mut part = text(b"body");
+        part.headers = Some(
+            [
+                ("sUbJeCt", "=?UTF-8?Q?Gr=C3=BC=C3=9Fe?="),
+                ("reply-to", "you@example.com"),
+                ("message-id", "<rfc@example.com>"),
+                ("in-reply-to", "<parent@example.com>"),
+                ("references", "<first@example.com>"),
+                ("References", "<second@example.com>"),
+                ("bcc", "hidden@example.com"),
+            ]
+            .map(|(n, v)| MessagePartHeader {
+                name: Some(n.into()),
+                value: Some(v.into()),
+            })
+            .to_vec(),
+        );
+        let p = parse(part);
+        assert_eq!(p.subject.as_deref(), Some("Grüße"));
+        assert_eq!(p.reply_to.as_deref(), Some("you@example.com"));
+        assert_eq!(p.message_id.as_deref(), Some("<rfc@example.com>"));
+        assert_eq!(
+            p.references.as_deref(),
+            Some("<first@example.com> <second@example.com>")
+        );
+        assert_eq!(p.bcc_addrs.as_deref(), Some("hidden@example.com"));
     }
 }

@@ -16,7 +16,10 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, PencilLine } from "lucide-react";
+import { useState } from "react";
+import { Button } from "@/components/ui/button";
+import { emailError } from "@/lib/drafts";
 import { useNavigationStore } from "@/lib/NavigationStore";
 
 const SidebarEmailInbox: React.FC<{
@@ -27,14 +30,41 @@ const SidebarEmailInbox: React.FC<{
     state.inbox?.accountId === acc.id ? state.inbox.inboxId : null,
   );
 
+  const [composeError, setComposeError] = useState<string | null>(null);
+
   return (
     <Collapsible defaultOpen className="group/collapsible">
-      <SidebarGroupLabel asChild>
-        <CollapsibleTrigger>
-          {acc.name}
-          <ChevronDown className="ml-auto transition-transform group-data-[state=open]/collapsible:rotate-180" />
-        </CollapsibleTrigger>
-      </SidebarGroupLabel>
+      {/* the compose button is a sibling of the trigger: a button inside a button is invalid HTML */}
+      <div className="flex items-center">
+        <SidebarGroupLabel asChild className="flex-1">
+          <CollapsibleTrigger>
+            {acc.name}
+            <ChevronDown className="ml-auto transition-transform group-data-[state=open]/collapsible:rotate-180" />
+          </CollapsibleTrigger>
+        </SidebarGroupLabel>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          className="rounded-none"
+          aria-label={`Compose from ${acc.name}`}
+          title="Compose"
+          onClick={() => {
+            setComposeError(null);
+            void useNavigationStore
+              .getState()
+              .compose(acc.id, "New", null)
+              .catch((e) => setComposeError(emailError(e)));
+          }}
+        >
+          <PencilLine />
+        </Button>
+      </div>
+      {composeError && (
+        <p role="alert" className="px-2 text-xs text-destructive">
+          {composeError}
+        </p>
+      )}
       <CollapsibleContent>
         <SidebarMenuSub>
           {EMAIL_INBOXES.map((it) => (

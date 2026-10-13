@@ -33,6 +33,7 @@ use crate::{
     AppError, DbPool, InvalidateEvent, Progress,
 };
 
+pub mod drafts;
 pub mod gmail;
 pub mod repo;
 

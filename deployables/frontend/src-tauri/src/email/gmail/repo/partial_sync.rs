@@ -204,8 +204,58 @@ mod tests {
     #[test]
     fn apply_history_messages_added() {}
 
-    #[test]
-    fn apply_history_messages_deleted() {}
+    #[tokio::test]
+    async fn draft_replacement_history_does_not_delete_the_local_draft() {
+        use crate::email::drafts::{
+            model::{Draft, DraftFields},
+            store::Store,
+        };
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!().run(&pool).await.unwrap();
+        sqlx::query("INSERT INTO email_accounts(id,email,account_name,account_config) VALUES(1,'me@example.com','Test','{}')").execute(&pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO messages(account_id,provider_msg_id,thread_id) VALUES(1,'old','thread')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let store = Store(pool.clone());
+        let draft = Draft::new(1, DraftFields::default());
+        store.insert(&draft).await.unwrap();
+        let repo = super::super::GmailRepo::new(pool.clone(), 1);
+        repo.apply_history(
+            vec![History {
+                messages_deleted: Some(vec![HistoryMessageDeleted {
+                    message: Some(google_gmail1::api::Message {
+                        id: Some("old".into()),
+                        ..Default::default()
+                    }),
+                }]),
+                messages_added: Some(vec![HistoryMessageAdded {
+                    message: Some(google_gmail1::api::Message {
+                        id: Some("new".into()),
+                        thread_id: Some("thread".into()),
+                        ..Default::default()
+                    }),
+                }]),
+                ..Default::default()
+            }],
+            Channel::new(|_| Ok(())),
+        )
+        .await
+        .unwrap();
+        assert_eq!(store.get(&draft.id).await.unwrap().id, draft.id);
+        let ids: Vec<String> =
+            sqlx::query_scalar("SELECT provider_msg_id FROM messages WHERE account_id=1")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(ids, ["new"]);
+    }
 
     #[test]
     fn apply_history_skips_entry_missing_required_fields() {}
