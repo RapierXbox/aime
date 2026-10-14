@@ -85,7 +85,9 @@ export default function DraftComposer({
         : d.status === "Synced"
           ? "Saved locally · Synced to Gmail"
           : d.status === "Local"
-            ? "Saved locally · Waiting for Gmail sync"
+            ? !d.remote && !d.fields.body_text.trim()
+              ? "Saved locally" // untouched drafts are never uploaded
+              : "Saved locally · Waiting for Gmail sync"
             : d.status === "Unknown"
               ? "Gmail status unknown"
               : d.status;
@@ -318,14 +320,12 @@ export default function DraftComposer({
               }
             />
             {buffer.fields.quote_html && (
-              <details className="border-t border-border text-sm">
-                <summary className="px-4 py-2 cursor-pointer text-muted-foreground">
+              <details open className="border-t border-border text-sm">
+                <summary className="px-4 py-2 cursor-pointer select-none text-muted-foreground">
                   Quoted original
                 </summary>
                 {/* the quote is only ever shown inside the sandboxed frame */}
-                <div className="h-64">
-                  <EmailBodyFrame html={buffer.fields.quote_html} />
-                </div>
+                <EmailBodyFrame html={buffer.fields.quote_html} fit />
               </details>
             )}
           </div>

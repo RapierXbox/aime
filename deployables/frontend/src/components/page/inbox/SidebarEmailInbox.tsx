@@ -46,7 +46,7 @@ const SidebarEmailInbox: React.FC<{
           type="button"
           variant="ghost"
           size="icon-sm"
-          className="rounded-none"
+          className="rounded-none text-sidebar-foreground/70"
           aria-label={`Compose from ${acc.name}`}
           title="Compose"
           onClick={() => {

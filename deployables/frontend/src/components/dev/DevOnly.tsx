@@ -7,7 +7,7 @@ interface DevOnlyProps {
 
 export const DevOnly: React.FC<DevOnlyProps> = ({ children }) => {
   useEffect(() => {
-    
+
   });
   const isDev = import.meta.env.DEV;
   const [isCollapsed, setIsCollapsed] = useState(true);
@@ -15,7 +15,8 @@ export const DevOnly: React.FC<DevOnlyProps> = ({ children }) => {
 
   return (
     <div
-      className="group data-[collapsed=false]:border-2 border-red-200 p-2 rounded-md"
+      className="group data-[collapsed=false]:border-2 border-red-200 data-collapsed:p-2 
+        rounded-md overflow-x-scroll"
       data-collapsed={isCollapsed}
     >
       <Bug

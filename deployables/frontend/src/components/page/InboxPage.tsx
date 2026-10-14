@@ -57,7 +57,7 @@ const InboxPage: React.FC<{
   return (
     <div className="w-[20rem] flex flex-col min-h-0">
       <SyncProgress accountId={accountId} />
-      <div className="flex-1 pt-2 space-y-2 divide-y divide-accent overflow-y-scroll">
+      <div className="flex-1 pt-2 divide-y divide-accent [overflow-y:overlay]">
         {q.data?.pages?.map((group, i) => (
           <React.Fragment key={i}>
             {group.messages.map((msg) => (

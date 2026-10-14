@@ -24,6 +24,15 @@ import {
   type PlateLeafProps,
 } from "platejs/react";
 import {
+  BlockquoteRules,
+  BoldRules,
+  CodeRules,
+  HeadingRules,
+  ItalicRules,
+  StrikethroughRules,
+  UnderlineRules,
+} from "@platejs/basic-nodes";
+import {
   BlockquotePlugin,
   BoldPlugin,
   CodePlugin,
@@ -35,9 +44,9 @@ import {
   UnderlinePlugin,
 } from "@platejs/basic-nodes/react";
 import { ListPlugin } from "@platejs/list/react";
-import { toggleList } from "@platejs/list";
+import { BulletedListRules, OrderedListRules, toggleList } from "@platejs/list";
 import { LinkPlugin } from "@platejs/link/react";
-import { upsertLink } from "@platejs/link";
+import { LinkRules, upsertLink } from "@platejs/link";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { htmlToValue, valueToHtml, valueToText } from "@/lib/draftText";
@@ -73,21 +82,35 @@ function block(as: "div" | "h1" | "h2" | "h3" | "blockquote", className?: string
   };
 }
 
+// markdown shortcuts only for nodes the toolbar already offers: `# `, `**b**`, `- `, `1. `, `> `, `[t](url)`
 const PLUGINS = [
   ParagraphPlugin.withComponent(block("div", "min-h-5")),
-  BoldPlugin.withComponent(leaf("strong")),
-  ItalicPlugin.withComponent(leaf("em")),
-  UnderlinePlugin.withComponent(leaf("u")),
-  StrikethroughPlugin.withComponent(leaf("s")),
-  CodePlugin.withComponent(leaf("code", "bg-muted px-1 font-mono text-[0.9em]")),
-  BlockquotePlugin.withComponent(
+  BoldPlugin.configure({
+    inputRules: [BoldRules.markdown({ variant: "*" }), BoldRules.markdown({ variant: "_" })],
+  }).withComponent(leaf("strong")),
+  ItalicPlugin.configure({
+    inputRules: [ItalicRules.markdown({ variant: "*" }), ItalicRules.markdown({ variant: "_" })],
+  }).withComponent(leaf("em")),
+  UnderlinePlugin.configure({ inputRules: [UnderlineRules.markdown()] }).withComponent(leaf("u")),
+  StrikethroughPlugin.configure({ inputRules: [StrikethroughRules.markdown()] }).withComponent(leaf("s")),
+  CodePlugin.configure({ inputRules: [CodeRules.markdown()] }).withComponent(
+    leaf("code", "bg-muted px-1 font-mono text-[0.9em]"),
+  ),
+  BlockquotePlugin.configure({ inputRules: [BlockquoteRules.markdown()] }).withComponent(
     block("blockquote", "border-l border-border pl-3 text-muted-foreground"),
   ),
-  H1Plugin.withComponent(block("h1", "text-xl font-semibold")),
-  H2Plugin.withComponent(block("h2", "text-lg font-semibold")),
-  H3Plugin.withComponent(block("h3", "text-base font-semibold")),
-  ListPlugin,
-  LinkPlugin.withComponent((props: PlateElementProps) => (
+  H1Plugin.configure({ inputRules: [HeadingRules.markdown()] }).withComponent(block("h1", "text-xl font-semibold")),
+  H2Plugin.configure({ inputRules: [HeadingRules.markdown()] }).withComponent(block("h2", "text-lg font-semibold")),
+  H3Plugin.configure({ inputRules: [HeadingRules.markdown()] }).withComponent(block("h3", "text-base font-semibold")),
+  ListPlugin.configure({
+    inputRules: [
+      BulletedListRules.markdown({ variant: "-" }),
+      BulletedListRules.markdown({ variant: "*" }),
+      OrderedListRules.markdown({ variant: "." }),
+      OrderedListRules.markdown({ variant: ")" }),
+    ],
+  }),
+  LinkPlugin.configure({ inputRules: [LinkRules.markdown()] }).withComponent((props: PlateElementProps) => (
     <PlateElement {...props} as="a" className="underline" />
   )),
 ];

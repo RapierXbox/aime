@@ -10,6 +10,12 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { commands, type Draft } from "@/bindings";
 import { useDraftStore } from "@/lib/DraftStore";
 import DraftComposer from "./DraftComposer";
+// jsdom has no layout: the observer fires once on observe so the quote frame fits
+vi.stubGlobal("ResizeObserver", class {
+  constructor(private cb: () => void) {}
+  observe() { this.cb(); }
+  disconnect() {}
+});
 vi.mock("@/bindings", () => ({
   commands: {
     getDraft: vi.fn(),
@@ -149,6 +155,11 @@ describe("composer", () => {
 
     const { container } = show(d);
     expect(container.querySelector("details iframe")).toBeTruthy();
+    expect(container.querySelector("details")!.open).toBe(true);
+    // fit mode sizes the frame inline instead of scrolling inside it
+    fireEvent.load(container.querySelector("details iframe")!);
+    expect(container.querySelector<HTMLIFrameElement>("details iframe")!.style.height).toMatch(/px$/);
+    expect(container.querySelector("details iframe")!.getAttribute("srcdoc")).toContain("html{overflow-x:auto;overflow-y:hidden}");
     fireEvent.click(container.querySelector("svg.lucide-bug")!);
     const dump = container.querySelector("pre")!.textContent!;
     expect(dump).toContain('"subject": "Hello"');

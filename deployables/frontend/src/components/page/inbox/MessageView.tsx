@@ -7,6 +7,8 @@ import { emailError } from "@/lib/drafts";
 import { Button } from "@/components/ui/button";
 import DOMPurify from "dompurify";
 import { DevOnly } from "@/components/dev/DevOnly";
+import { supportsDarkMode } from "@/lib/emailColorScheme";
+import { Forward, Reply, ReplyAll } from "lucide-react";
 
 // email links must never navigate anywhere yet, so strip hrefs at sanitize time
 // rather than trying to intercept clicks across the iframe boundary
@@ -59,14 +61,30 @@ const DEFAULT_BODY_STYLE =
 
 // isolates email HTML in its own document so <style>/font-family rules can't
 // leak into the app chrome; sandboxed with no scripts, no same-origin access.
-// fills the available space and scrolls internally instead of resizing to content
-export const EmailBodyFrame: React.FC<{ html: string }> = React.memo(({ html }) => (
-  <iframe
+// fills the available space and scrolls internally, or with `fit` grows to its
+// content height so it scrolls with the surrounding page
+export const EmailBodyFrame: React.FC<{ html: string; fit?: boolean }> = React.memo(({ html, fit }) => {
+  // dark-safe mail follows the app theme on a transparent canvas; everything else
+  // is pinned to light on white paper, since its colors assume a white background
+  const scheme = supportsDarkMode(html) ? "light dark" : "light";
+  return <iframe
     sandbox="allow-same-origin"
     className="w-full h-full border-0"
-    srcDoc={`<style>body{${DEFAULT_BODY_STYLE}}</style>${DOMPurify.sanitize(html)}`}
-  />
-));
+    // must match the document's scheme, or the browser paints an opaque canvas behind it
+    style={{ colorScheme: scheme }}
+    // fit: flow-root keeps child margins/floats inside body so offsetHeight is the full
+    // content height; vertical overflow hidden so only wide content scrolls (sideways) here.
+    // WHOLE_DOCUMENT keeps <html>/<body> attributes: mail often hangs its dark-mode
+    // class and background on <body>, and a fragment sanitize drops them
+    srcDoc={`<style>:root{color-scheme:${scheme}${scheme === "light" ? ";background:#fff" : ""}}body{${DEFAULT_BODY_STYLE}}::-webkit-scrollbar{width:8px;height:8px}::-webkit-scrollbar-track,::-webkit-scrollbar-corner{background:transparent}::-webkit-scrollbar-thumb{background-color:rgba(128,128,128,.45);background-clip:content-box;border:2px solid transparent;border-radius:4px}${fit ? "html{overflow-x:auto;overflow-y:hidden}body{display:flow-root}" : ""}</style>${DOMPurify.sanitize(html, { WHOLE_DOCUMENT: true })}`}
+    onLoad={fit ? (e) => {
+      const frame = e.currentTarget;
+      const root = frame.contentDocument!.documentElement;
+      // re-fit when a width change reflows the content
+      new ResizeObserver(() => { frame.style.height = `${root.offsetHeight}px`; }).observe(root);
+    } : undefined}
+  />;
+});
 
 // headers come from the list row in the nav store, so they paint immediately;
 // only the bodies are fetched here
@@ -92,7 +110,7 @@ export const MessageView: React.FC<{ accountId: string; message: Message }> =
         <ReplyActions accountId={accountId} messageId={msgId} />
 
         {/* wide email HTML scrolls here, so the header stays put */}
-        <div className="p-4 flex-1 min-h-0 overflow-auto">
+        <div className="p-4 pt-4 flex-1 min-h-0 overflow-auto">
           {msgId === null ? null : q.isPending ? (
             <p className="text-sm text-muted-foreground">Loading…</p>
           ) : q.isError ? (
@@ -116,15 +134,24 @@ export const MessageView: React.FC<{ accountId: string; message: Message }> =
 
 
 const DevEmailHeader: React.FC<{ message: Message }> = ({ message }) => {
-  return (<div className="text-xs text-muted-foreground font-mono">
-    {Object.entries(message).map(([key, value]) => <div key={key}>{key}: {JSON.stringify(value)}</div>)}
-  </div >);
+  return (<pre className="text-xs text-muted-foreground font-mono">
+    {JSON.stringify(message, null, 2)}
+  </pre >);
 };
 function ReplyActions({ accountId, messageId }: { accountId: string; messageId: string | null }) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  return <div className="px-4 py-2 border-b border-border flex gap-2 flex-wrap">
-    {(["Reply", "ReplyAll", "Forward"] as const).map((mode) => <Button key={mode} className="rounded-none" variant="outline" disabled={busy || !messageId} onClick={() => { setBusy(true); setError(null); void useNavigationStore.getState().compose(accountId, mode, messageId).catch((e) => setError(emailError(e))).finally(() => setBusy(false)); }}>{mode === "ReplyAll" ? "Reply all" : mode}</Button>)}
-    {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+  // zero-height row: the pill straddles the header/body border
+  return <div className="relative h-0 z-10">
+    <div className="absolute left-1/2 -translate-x-1/2 -translate-y-1/2 flex flex-col items-center gap-1">
+      <div className="flex rounded-full border border-border bg-background overflow-hidden">
+        {(["Reply", "ReplyAll", "Forward"] as const).map((mode) => {
+          const Icon = { Reply, ReplyAll, Forward }[mode];
+          const label = mode === "ReplyAll" ? "Reply all" : mode;
+          return <Button key={mode} className="rounded-none" variant="ghost" size="icon-sm" aria-label={label} title={label} disabled={busy || !messageId} onClick={() => { setBusy(true); setError(null); void useNavigationStore.getState().compose(accountId, mode, messageId).catch((e) => setError(emailError(e))).finally(() => setBusy(false)); }}><Icon /></Button>;
+        })}
+      </div>
+      {error && <p role="alert" className="text-sm text-destructive bg-background px-2">{error}</p>}
+    </div>
   </div>;
 }

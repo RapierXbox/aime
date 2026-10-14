@@ -75,4 +75,22 @@ describe("RichTextEditor", () => {
     );
     expect(screen.queryByRole("textbox", { name: "Link URL" })).toBeNull();
   });
+  it("turns markdown shortcuts into formatting while typing", async () => {
+    const onChange = vi.fn();
+    render(<RichTextEditor initialHtml="<div></div>" onChange={onChange} readOnly={false} />);
+    const type = (text: string) => {
+      for (const ch of text) editor!.tf.insertText(ch);
+    };
+    act(() => {
+      editor!.tf.select({ path: [0, 0], offset: 0 });
+      type("## Title");
+      editor!.tf.insertBreak();
+      type("- **bold** item");
+    });
+    await waitFor(() =>
+      expect(onChange.mock.lastCall![0].body_html).toMatch(
+        /^<h2>Title<\/h2><ul><li><strong>bold<\/strong> item<\/li><\/ul>$/,
+      ),
+    );
+  });
 });
