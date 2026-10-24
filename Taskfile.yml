@@ -6,7 +6,6 @@ vars:
   COMPOSE: docker compose --env-file .env -f deploy/compose/docker-compose.yml
   ANSIBLE: ansible-playbook
   ANSIBLE_DIR: ansible
-  VAULT_FLAG: '{{if .VAULT_PASS_FILE}}--vault-password-file {{.VAULT_PASS_FILE}}{{else}}--ask-vault-pass{{end}}'
 
 tasks:
   default:
@@ -143,12 +142,12 @@ tasks:
   demo:
     desc: "embed a few texts and rerank a query against the running api, prints similarities"
     dir: deployables/backend
-    cmds: [go run ./cmd/demo {{.CLI_ARGS}}]
+    cmds: ["go run ./cmd/demo {{.CLI_ARGS}}"]
 
   smoke:
     desc: "end to end api check against the running api (needs BILLING_ENFORCE=false)"
     dir: deployables/backend
-    cmds: [go run ./cmd/smoke {{.CLI_ARGS}}]
+    cmds: ["go run ./cmd/smoke {{.CLI_ARGS}}"]
 
   down:
     desc: "stop and remove stack"
@@ -184,13 +183,46 @@ tasks:
     cmds: [golangci-lint run]
 
   lint:frontend:
+    desc: lint frontend code
+    deps: [lint:frontend:rs, lint:frontend:ts]
+
+  lint:frontend:rs:
+    dir: deployables/frontend/src-tauri
+    cmds: [cargo check] # todo: move to cargo clippy
+
+  lint:frontend:ts:
     dir: deployables/frontend
     cmds: [pnpm lint]
-  
-  fmt:
+
+  fmt:frontend:
+    desc: Format frontend code
+
+  fmt:check:frontend:
+    desc: Check that the frontend is formatted properly
+    deps: [fmt:check:rs, fmt:check:ts]
+
+  fmt:check:ts:
+    desc: Check that frontend ts is formatted properly
+    dir: deployables/frontend
+
+  fmt:check:rs:
+    desc: Check that frontend ts is formatted properly
+    dir: deployables/frontend/src-tauri
+    cmds: [cargo fmt --check]
+
+  fmt:check: 
+    desc: Check Code is formatted properly
+    deps: [fmt:check:frontend, fmt:check:backend]
+
+  fmt:backend:
     desc: "format go code"
     dir: deployables/backend
     cmds: [go fmt ./...]
+
+  fmt:check:backend:
+      dir: deployables/backend
+      desc: Check that the Backend is formatted properly
+      cmds: [gofmt -l .]
 
   tidy:
     desc: tidy go.mod/go.sum
@@ -199,11 +231,13 @@ tasks:
   
   # deploy
   deploy:dev:
-    desc: "deploy to devserver via ansible (set VAULT_PASS_FILE for non-interactive)"
+    desc: "deploy to devserver via ansible (vault password: ansible/.vault-pass-dev or VAULT_PASS_FILE)"
     dir: '{{.ANSIBLE_DIR}}'
-    cmds: ['{{.ANSIBLE}} playbook.yml --limit dev {{.VAULT_FLAG}} {{.CLI_ARGS}}']
+    cmds: ['{{.ANSIBLE}} playbook.yml --limit dev --vault-id dev@{{.VAULT_PASS_FILE | default ".vault-pass-dev"}} {{.CLI_ARGS}}']
 
   deploy:prod:
-    desc: "deploy to prodserver via ansible (set VAULT_PASS_FILE for non-interactive)"
+    desc: "deploy to prodserver via ansible (vault password: ansible/.vault-pass-prod or VAULT_PASS_FILE)"
     dir: '{{.ANSIBLE_DIR}}'
-    cmds: ['{{.ANSIBLE}} playbook.yml --limit prod {{.VAULT_FLAG}} {{.CLI_ARGS}}']
+    cmds: ['{{.ANSIBLE}} playbook.yml --limit prod --vault-id prod@{{.VAULT_PASS_FILE | default ".vault-pass-prod"}} {{.CLI_ARGS}}']
+
+    

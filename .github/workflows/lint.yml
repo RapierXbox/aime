@@ -1,0 +1,42 @@
+name: Lint
+
+on:
+  push:
+
+jobs:
+  lint:
+    name: "Lint"
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: deployables/backend/go.mod
+
+      - uses: golangci/golangci-lint-action@v8
+        with:
+          working-directory: deployables/backend
+
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: deployables/frontend/package.json
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: deployables/frontend/pnpm-lock.yaml
+
+      - run: pnpm install --frozen-lockfile
+        working-directory: deployables/frontend
+
+      - name: Install Task
+        uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - run: task lint
+      - run: task fmt:check
