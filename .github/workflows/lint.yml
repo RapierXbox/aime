@@ -4,20 +4,29 @@ on:
   push:
 
 jobs:
-  lint:
-    name: "Lint"
+  rust:
+    name: "Lint Rust"
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - name: Install Task
+        uses: arduino/setup-task@v2
         with:
-          go-version-file: deployables/backend/go.mod
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: golangci/golangci-lint-action@v8
-        with:
-          working-directory: deployables/backend
+      - run: task lint:frontend:rs
+      - run: task fmt:check:rs
+        if: ${{ !cancelled() }}
+
+  ts:
+    name: "Lint TypeScript"
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
 
       - uses: pnpm/action-setup@v4
         with:
@@ -38,5 +47,27 @@ jobs:
           version: 3.x
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - run: task lint
-      - run: task fmt:check
+      - run: task lint:frontend:ts
+      - run: task fmt:check:ts
+        if: ${{ !cancelled() }}
+
+  go:
+    name: "Lint Go"
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: deployables/backend/go.mod
+
+      - name: Install Task
+        uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - run: task lint:backend
+      - run: task fmt:check:backend
+        if: ${{ !cancelled() }}
