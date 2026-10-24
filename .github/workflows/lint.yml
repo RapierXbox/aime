@@ -10,6 +10,10 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+      - name: Install system dependencies (Tauri)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libdbus-1-dev pkg-config build-essential
 
       - name: Install Task
         uses: arduino/setup-task@v2
@@ -47,9 +51,8 @@ jobs:
           version: 3.x
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
+      # ponytail: no fmt:check:ts step, no TS formatter is configured yet
       - run: task lint:frontend:ts
-      - run: task fmt:check:ts
-        if: ${{ !cancelled() }}
 
   go:
     name: "Lint Go"
@@ -61,6 +64,10 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: deployables/backend/go.mod
+
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          install-only: true
 
       - name: Install Task
         uses: arduino/setup-task@v2

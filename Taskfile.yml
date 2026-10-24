@@ -222,7 +222,7 @@ tasks:
   fmt:check:backend:
       dir: deployables/backend
       desc: Check that the Backend is formatted properly
-      cmds: [gofmt -l .]
+      cmds: ['gofmt -l . | (! grep .)'] # gofmt -l always exits 0; fail if it lists files
 
   tidy:
     desc: tidy go.mod/go.sum
